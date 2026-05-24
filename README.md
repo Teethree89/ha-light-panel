@@ -4,6 +4,10 @@ A tiny Home Assistant panel server for low-power browsers, old tablets, kiosk di
 
 Instead of loading the full Home Assistant frontend, HA Light Panel serves a small SVG/HTML interface and pulls state from the Home Assistant REST API. The browser does very little work, which makes it a good fit for slow Android WebViews and cheap wall panels.
 
+If this saves you a little time, [buy me a coffee](https://paypal.me/ABPaintball/5). Add `Buy me a coffee` in the PayPal note so I know what it was for.
+
+[![Buy me a coffee](https://img.shields.io/badge/Buy%20me%20a%20coffee-$5%20PayPal-00457C?logo=paypal)](https://paypal.me/ABPaintball/5)
+
 ## Features
 
 - Lightweight climate dashboard with six room cards
@@ -13,7 +17,7 @@ Instead of loading the full Home Assistant frontend, HA Light Panel serves a sma
 - Temperature, humidity, battery, HVAC mode, comfort band, and status-panel cards
 - Optional camera snapshot grid
 - Optional Blink live-view proxy integration hooks
-- Assist text prompt via Home Assistant conversation API
+- Service-backed action buttons for comfort tweaks and room balancing
 - Docker and systemd deployment examples
 - No runtime npm dependencies
 
