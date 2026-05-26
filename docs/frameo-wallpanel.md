@@ -163,6 +163,10 @@ adb shell dumpsys audio
 
 See [HTTPS](https.md) before trying browser-based push-to-talk.
 
+For the tested Frameo USB-host workflow, SimpleSSHD setup, Fully Kiosk bridge,
+and `/proc/asound` microphone diagnostics, see
+[frameo-usb-microphone.md](frameo-usb-microphone.md).
+
 ## Troubleshooting
 
 Page works on laptop but not on frame:

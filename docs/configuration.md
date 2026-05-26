@@ -31,6 +31,30 @@ Use `HA_TOKEN` for the token instead of putting it in config.
 HA_TOKEN=...
 ```
 
+## Mode Card
+
+The mode card uses plain labels for household-facing status. Timers are optional, but they allow the panel to show states such as `Balancing rooms` with remaining time.
+
+```json
+{
+  "panel": {
+    "mode": {
+      "operatingState": "sensor.hvac_operating_state",
+      "miniMode": "climate.mini_split",
+      "action": "sensor.mini_split_inferred_action",
+      "airflowBoostTimer": "timer.airflow_boost",
+      "dryAssistTimer": "timer.dry_assist",
+      "postDryFanTimer": "timer.post_dry_fan_purge",
+      "automationEnabled": "input_boolean.hvac_automation_enabled",
+      "thermostatUnavailable": "binary_sensor.active_thermostat_unavailable",
+      "heatDemand": "binary_sensor.heat_demand",
+      "coolDemand": "binary_sensor.cool_demand",
+      "humidityDemand": "binary_sensor.dehumidify_recommended"
+    }
+  }
+}
+```
+
 ## Rooms
 
 The current layout displays up to six room cards.
@@ -132,6 +156,10 @@ Buttons call Home Assistant services.
       },
       "reset": {
         "service": "script.reset_temperature",
+        "data": {}
+      },
+      "assist": {
+        "service": "script.start_airflow_assist_now",
         "data": {}
       }
     }

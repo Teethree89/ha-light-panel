@@ -28,6 +28,12 @@
       "action": "sensor.hvac_inferred_action"
     },
     "mode": {
+      "operatingState": "sensor.hvac_operating_state",
+      "miniMode": "climate.mini_split",
+      "action": "sensor.mini_split_inferred_action",
+      "airflowBoostTimer": "timer.airflow_boost",
+      "dryAssistTimer": "timer.dry_assist",
+      "postDryFanTimer": "timer.post_dry_fan_purge",
       "automationEnabled": "input_boolean.hvac_automation_enabled",
       "thermostatUnavailable": "binary_sensor.active_thermostat_unavailable",
       "heatDemand": "binary_sensor.heat_demand",
@@ -53,6 +59,10 @@
       },
       "reset": {
         "service": "script.reset_comfort_temperature",
+        "data": {}
+      },
+      "assist": {
+        "service": "script.start_airflow_assist_now",
         "data": {}
       }
     },

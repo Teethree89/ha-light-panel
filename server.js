@@ -3,105 +3,141 @@ const fs = require('fs');
 const path = require('path');
 const { URL } = require('url');
 
-loadEnvFile(process.env.ENV_FILE || path.resolve(__dirname, '.env'));
+const HOST = process.env.HOST || '0.0.0.0';
+const PORT = Number(process.env.PORT || 8890);
+const POLL_MS = Math.max(750, Number(process.env.POLL_MS || 2000));
+const SECRET_FILE = process.env.HA_SECRET_FILE || path.resolve(__dirname, '../../secrets/home-assistant.md');
 
-const CONFIG_PATH = process.env.CONFIG_PATH || path.resolve(__dirname, 'config.json');
-const FALLBACK_CONFIG_PATH = path.resolve(__dirname, 'examples/frameo-climate.json');
-const CONFIG = loadConfig(CONFIG_PATH);
-const HOST = process.env.HOST || CONFIG.server?.host || '0.0.0.0';
-const PORT = Number(process.env.PORT || CONFIG.server?.port || 8890);
-const POLL_MS = Math.max(750, Number(process.env.POLL_MS || CONFIG.server?.pollMs || 2000));
-const SECRET_FILE = process.env.HA_SECRET_FILE || CONFIG.homeAssistant?.secretFile || '';
-const CAMERAS = CONFIG.cameras || [];
-const ENTITY_IDS = buildEntityIds(CONFIG);
+const CAMERAS = [
+  {
+    slug: 'driveway',
+    label: 'Driveway',
+    sourceEntity: 'camera.driveway',
+    liveEntity: 'camera.blink_live_driveway',
+    batteryEntity: 'binary_sensor.driveway_battery',
+    motionEntity: 'binary_sensor.driveway_motion',
+    motionSwitch: 'switch.driveway_camera_motion_detection',
+    tempEntity: 'sensor.blink_driveway_temperature'
+  },
+  {
+    slug: 'back_porch',
+    label: 'Back Porch',
+    sourceEntity: 'camera.back_porch',
+    liveEntity: 'camera.blink_live_back_porch',
+    batteryEntity: 'binary_sensor.back_porch_battery',
+    motionEntity: 'binary_sensor.back_porch_motion',
+    motionSwitch: 'switch.back_porch_camera_motion_detection',
+    tempEntity: 'sensor.blink_back_porch_temperature'
+  },
+  {
+    slug: 'riccis_window',
+    label: "Ricci's Window",
+    sourceEntity: 'camera.riccis_window',
+    liveEntity: 'camera.blink_live_riccis_window',
+    batteryEntity: 'binary_sensor.riccis_window_battery',
+    motionEntity: 'binary_sensor.riccis_window_motion',
+    motionSwitch: 'switch.riccis_window_camera_motion_detection',
+    tempEntity: 'sensor.blink_riccis_window_temperature'
+  },
+  {
+    slug: 'back_door',
+    label: 'Back Door',
+    sourceEntity: 'camera.back_door',
+    liveEntity: 'camera.blink_live_back_door',
+    batteryEntity: 'binary_sensor.back_door_battery',
+    motionEntity: 'binary_sensor.back_door_motion',
+    motionSwitch: 'switch.back_door_camera_motion_detection',
+    tempEntity: 'sensor.blink_back_door_temperature'
+  },
+  {
+    slug: 'oven_cam',
+    label: 'Oven Cam',
+    sourceEntity: 'camera.oven_cam',
+    liveEntity: 'camera.blink_live_oven_cam',
+    powerLabel: 'USB power',
+    motionEntity: 'binary_sensor.oven_cam_motion',
+    motionSwitch: 'switch.oven_cam_camera_motion_detection'
+  },
+  {
+    slug: 'front_droor',
+    label: 'Front Door',
+    sourceEntity: 'camera.front_droor',
+    liveEntity: 'camera.blink_live_front_droor',
+    ignoreBatteryLevel: true,
+    batteryEntity: 'binary_sensor.front_droor_battery',
+    motionEntity: 'binary_sensor.front_droor_motion',
+    motionSwitch: 'switch.front_droor_camera_motion_detection'
+  }
+];
 
-function loadEnvFile(envPath) {
-  if (!envPath || !fs.existsSync(envPath)) return;
-  const lines = fs.readFileSync(envPath, 'utf8').split(/\r?\n/);
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith('#')) continue;
-    const match = trimmed.match(/^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
-    if (!match || process.env[match[1]] !== undefined) continue;
-    process.env[match[1]] = match[2].replace(/^['"]|['"]$/g, '');
-  }
-}
-
-function loadConfig(configPath) {
-  const resolved = path.resolve(configPath);
-  const chosen = fs.existsSync(resolved) ? resolved : FALLBACK_CONFIG_PATH;
-  if (!fs.existsSync(chosen)) {
-    throw new Error(`Config file not found. Create ${resolved} or set CONFIG_PATH.`);
-  }
-  const text = fs.readFileSync(chosen, 'utf8');
-  try {
-    return JSON.parse(stripJsonComments(text));
-  } catch (error) {
-    throw new Error(`Could not parse ${chosen}: ${error.message}`);
-  }
-}
-
-function stripJsonComments(text) {
-  let output = '';
-  let inString = false;
-  let quote = '';
-  let escaped = false;
-  for (let index = 0; index < text.length; index += 1) {
-    const char = text[index];
-    const next = text[index + 1];
-    if (inString) {
-      output += char;
-      if (escaped) escaped = false;
-      else if (char === '\\') escaped = true;
-      else if (char === quote) inString = false;
-      continue;
-    }
-    if (char === '"' || char === "'") {
-      inString = true;
-      quote = char;
-      output += char;
-      continue;
-    }
-    if (char === '/' && next === '/') {
-      while (index < text.length && text[index] !== '\n') index += 1;
-      output += '\n';
-      continue;
-    }
-    if (char === '/' && next === '*') {
-      index += 2;
-      while (index < text.length && !(text[index] === '*' && text[index + 1] === '/')) index += 1;
-      index += 1;
-      continue;
-    }
-    output += char;
-  }
-  return output;
-}
-
-function buildEntityIds(config) {
-  const ids = new Set(config.entities || []);
-  collectEntityIds(config.panel || {}, ids);
-  collectEntityIds(config.cameras || [], ids);
-  return [...ids];
-}
-
-function collectEntityIds(value, ids) {
-  if (!value) return;
-  if (typeof value === 'string') {
-    if (/^[a-z_]+\.[a-zA-Z0-9_]+$/.test(value)) ids.add(value);
-    return;
-  }
-  if (Array.isArray(value)) {
-    for (const item of value) collectEntityIds(item, ids);
-    return;
-  }
-  if (typeof value === 'object') {
-    for (const [key, item] of Object.entries(value)) {
-      if (['service', 'url', 'path', 'label', 'slug', 'type', 'icon'].includes(key)) continue;
-      collectEntityIds(item, ids);
-    }
-  }
-}
+const ENTITY_IDS = [
+  'sensor.hybrid_hvac_operating_state',
+  'input_boolean.hybrid_hvac_heat_control_enabled',
+  'binary_sensor.hybrid_hvac_active_thermostat_unavailable',
+  'binary_sensor.hybrid_hvac_heat_demand',
+  'binary_sensor.hybrid_hvac_cool_demand',
+  'binary_sensor.hybrid_hvac_dehumidify_recommended',
+  'input_boolean.hybrid_hvac_comfort_hold_active',
+  'input_boolean.hybrid_hvac_schedule_enabled',
+  'sensor.hybrid_hvac_schedule_period',
+  'sensor.hybrid_hvac_schedule_comfort_setting',
+  'sensor.hybrid_hvac_airflow_focus_zone',
+  'timer.hybrid_hvac_airflow_manual_override',
+  'timer.hybrid_hvac_airflow_boost',
+  'timer.hybrid_hvac_dry_assist',
+  'timer.hybrid_hvac_post_dry_fan_purge',
+  'sensor.hybrid_hvac_room_temperature',
+  'sensor.hybrid_hvac_room_humidity',
+  'sensor.hybrid_hvac_average_temperature',
+  'sensor.hybrid_hvac_heat_target',
+  'sensor.hybrid_hvac_cool_target',
+  'sensor.ha_server_cpu_temp',
+  'sensor.ha_server_ddr_temp',
+  'sensor.ha_server_ram_used',
+  'sensor.ha_server_cpu_load',
+  'sensor.ha_server_disk_used',
+  'sensor.gree_vireo_24k_outside_temperature',
+  'sensor.gree_inferred_action',
+  'sensor.my_ecobee_current_temperature_2',
+  'climate.my_ecobee_3',
+  'climate.kitchen_mini_split',
+  'sensor.sonoff_snzb_02dr2_temperature',
+  'sensor.sonoff_snzb_02dr2_humidity',
+  'sensor.sonoff_snzb_02dr2_temperature_2',
+  'sensor.sonoff_snzb_02dr2_humidity_2',
+  'sensor.sonoff_snzb_02dr2_temperature_3',
+  'sensor.sonoff_snzb_02dr2_humidity_3',
+  'sensor.sonoff_snzb_02dr2_battery',
+  'sensor.sonoff_snzb_02dr2_battery_2',
+  'sensor.sonoff_snzb_02dr2_battery_3',
+  'sensor.renni_s_smart_sock_heart_rate',
+  'sensor.renni_s_smart_sock_o2_saturation',
+  'sensor.renni_s_smart_sock_battery_percentage',
+  'sensor.renni_s_smart_sock_battery_remaining',
+  'sensor.renni_s_smart_sock_signal_strength',
+  'sensor.renni_s_smart_sock_skin_temperature',
+  'sensor.renni_s_smart_sock_sleep_state',
+  'sensor.renni_s_smart_sock_o2_saturation_10_minute_average',
+  'binary_sensor.renni_s_smart_sock_charging',
+  'binary_sensor.renni_s_smart_sock_sock_off',
+  'binary_sensor.renni_s_smart_sock_sock_disconnected_alert',
+  'binary_sensor.renni_s_smart_sock_high_heart_rate_alert',
+  'binary_sensor.renni_s_smart_sock_low_heart_rate_alert',
+  'binary_sensor.renni_s_smart_sock_high_oxygen_alert',
+  'binary_sensor.renni_s_smart_sock_low_oxygen_alert',
+  'binary_sensor.renni_s_smart_sock_low_battery_alert',
+  'binary_sensor.renni_s_smart_sock_lost_power_alert',
+  'alarm_control_panel.blink_114_cooper',
+  'binary_sensor.blink_liveview_proxy',
+  ...CAMERAS.flatMap(camera => [
+    camera.sourceEntity,
+    camera.liveEntity,
+    camera.batteryEntity,
+    camera.motionEntity,
+    camera.motionSwitch,
+    camera.tempEntity
+  ].filter(Boolean))
+];
 
 let stateById = {};
 let lastPollAt = 0;
@@ -126,19 +162,28 @@ function escapeRegex(value) {
 }
 
 function haBaseUrl() {
-  return trimSlash(process.env.HA_URL || CONFIG.homeAssistant?.url || readSecretField('Home Assistant UI', 'URL') || 'http://homeassistant.local:8123');
+  return trimSlash(process.env.HA_URL || readSecretField('Home Assistant UI', 'URL') || 'http://ha-server.local:8123');
 }
 
 function haBrowserUrl() {
   if (process.env.HA_BROWSER_URL) return trimSlash(process.env.HA_BROWSER_URL);
-  if (CONFIG.homeAssistant?.browserUrl) return trimSlash(CONFIG.homeAssistant.browserUrl);
   const fallbackIp = readSecretField('SSH', 'Fallback IP');
   if (fallbackIp) return `http://${fallbackIp}:8123`;
   return haBaseUrl();
 }
 
+function haSecureBrowserUrl() {
+  if (process.env.HA_SECURE_BROWSER_URL) return trimSlash(process.env.HA_SECURE_BROWSER_URL);
+  try {
+    const url = new URL(haBrowserUrl());
+    return `https://${url.hostname}`;
+  } catch (error) {
+    return '';
+  }
+}
+
 function haToken() {
-  return process.env.HA_TOKEN || CONFIG.homeAssistant?.token || readSecretField('Home Assistant API', 'Long-Lived Access Token');
+  return process.env.HA_TOKEN || readSecretField('Home Assistant API', 'Long-Lived Access Token');
 }
 
 function trimSlash(value) {
@@ -231,6 +276,12 @@ async function proxyHaResponse(req, res, apiPath, options = {}) {
   }
 }
 
+function blinkStaticAliasPath(pathname) {
+  const legacyPrefix = '/local/blink-liveview-proxy/';
+  if (!pathname.startsWith(legacyPrefix)) return pathname;
+  return `/api/blink_liveview_proxy/static/${encodeURIComponent(pathname.slice(legacyPrefix.length))}`;
+}
+
 function pickForwardHeaders(headers) {
   const picked = {};
   for (const name of ['accept', 'range', 'user-agent']) {
@@ -312,61 +363,15 @@ function textState(id, fallback = '--') {
   return isValidState(value) ? String(value) : fallback;
 }
 
-function valueRef(ref, fallback = 'unknown') {
-  if (!ref) return fallback;
-  if (typeof ref === 'string') return state(ref, fallback);
-  if (ref.attribute) return attr(ref.entity, ref.attribute, fallback);
-  return state(ref.entity, fallback);
-}
-
-function numberRef(ref, fallback = null) {
-  const value = Number.parseFloat(valueRef(ref, ''));
-  return Number.isFinite(value) ? value : fallback;
-}
-
-function isOnRef(ref) {
-  return valueRef(ref, 'off') === 'on';
-}
-
-function mappedLabel(value, map = {}) {
-  const key = String(value || '');
-  return map[key] || titleCase(key);
-}
-
-function roomCard(room) {
-  const extra = extraValue(room.extra);
-  const miniStatus = room.miniStatus ? {
-    fan: miniFanLabel(valueRef(room.miniStatus.mode, ''), valueRef(room.miniStatus.fan, '')),
-    compressor: miniActionLabel(valueRef(room.miniStatus.action, ''))
-  } : null;
-
+function roomCard(id, label, tempEntity, humidityEntity, batteryEntity, extra = '') {
   return {
-    id: room.id || slugify(room.label || 'room'),
-    label: room.label || 'Room',
-    temp: round(numberRef(room.temp), 1),
-    humidity: round(numberRef(room.humidity), 1),
-    battery: room.battery ? round(numberRef(room.battery), 0) : null,
-    extra,
-    miniStatus
+    id,
+    label,
+    temp: round(numberState(tempEntity), 1),
+    humidity: round(numberState(humidityEntity), 1),
+    battery: batteryEntity ? round(numberState(batteryEntity), 0) : null,
+    extra
   };
-}
-
-function extraValue(extra) {
-  if (!extra) return '';
-  if (typeof extra === 'string') return extra;
-  if (extra.type === 'comfortStatus') return comfortSummary().status;
-  const value = valueRef(extra, '');
-  if (!isValidState(value)) return extra.fallback || '';
-  if (extra.map) return mappedLabel(value, extra.map);
-  if (extra.hvacModeLabel) return hvacModeLabel(value);
-  return titleCase(value);
-}
-
-function slugify(value) {
-  return String(value || '')
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '_')
-    .replace(/^_+|_+$/g, '') || 'item';
 }
 
 function hvacModeLabel(value) {
@@ -386,7 +391,19 @@ function hvacModeLabel(value) {
 function miniFanLabel(hvacMode, fanMode) {
   const mode = String(hvacMode || '');
   if (mode === 'off') return 'Off';
-  return isValidState(fanMode) ? titleCase(fanMode) : hvacModeLabel(mode);
+  if (!isValidState(fanMode)) return hvacModeLabel(mode);
+  const text = String(fanMode || '').toLowerCase();
+  const labels = {
+    auto: 'Auto',
+    quiet: 'Quiet',
+    low: 'Low',
+    medium_low: 'Med Lo',
+    medium: 'Med',
+    medium_high: 'Med Hi',
+    high: 'High',
+    turbo: 'Turbo'
+  };
+  return labels[text] || titleCase(text).replace('Medium', 'Med').replace('Low', 'Lo').replace('High', 'Hi');
 }
 
 function miniActionLabel(value) {
@@ -394,16 +411,54 @@ function miniActionLabel(value) {
   const labels = {
     off: 'Off',
     idle: 'Idle',
-    cool: 'Cooling',
-    cooling: 'Cooling',
-    heat: 'Heating',
-    heating: 'Heating',
+    cool: 'Cool',
+    cooling: 'Cool',
+    heat: 'Heat',
+    heating: 'Heat',
     dry: 'Dry',
     drying: 'Dry',
     dehumidify: 'Dry',
     fan_only: 'Fan'
   };
   return labels[text] || titleCase(text);
+}
+
+function durationSeconds(value) {
+  const parts = String(value || '').split(':').map(part => Number.parseInt(part, 10));
+  if (parts.length !== 3 || parts.some(part => !Number.isFinite(part))) return null;
+  return parts[0] * 3600 + parts[1] * 60 + parts[2];
+}
+
+function remainingLabel(value) {
+  const seconds = durationSeconds(value);
+  if (!Number.isFinite(seconds)) return '';
+  if (seconds <= 0) return '';
+  const minutes = Math.ceil(seconds / 60);
+  if (minutes >= 60) {
+    const hours = Math.floor(minutes / 60);
+    const rest = minutes % 60;
+    return rest ? `${hours} hr ${rest} min left` : `${hours} hr left`;
+  }
+  return `${minutes} min left`;
+}
+
+function timerInfo(label, entityId) {
+  const remainingSeconds = durationSeconds(attr(entityId, 'remaining', ''));
+  if (!Number.isFinite(remainingSeconds) || remainingSeconds <= 0) return null;
+  const duration = durationSeconds(attr(entityId, 'duration', ''));
+  const totalSeconds = Number.isFinite(duration) && duration > 0 ? duration : remainingSeconds;
+  return {
+    label,
+    remainingSeconds,
+    totalSeconds,
+    remaining: remainingLabel(attr(entityId, 'remaining', '')),
+    progress: Math.max(0, Math.min(1, remainingSeconds / totalSeconds))
+  };
+}
+
+function timerDetail(label, entityId) {
+  const timer = timerInfo(label, entityId);
+  return timer?.remaining ? `${label}: ${timer.remaining}` : label;
 }
 
 function cameraConfig(slug) {
@@ -442,48 +497,84 @@ function cameraSummary(camera) {
 }
 
 function camerasState() {
-  const cameraPanel = CONFIG.cameraPanel || {};
   return {
     ok: !lastError,
     error: lastError,
     updatedAt: new Date(lastPollAt || Date.now()).toISOString(),
     alarm: {
-      entityId: cameraPanel.alarmEntity || '',
-      state: cameraPanel.alarmEntity ? state(cameraPanel.alarmEntity, 'unknown') : 'unknown'
+      entityId: 'alarm_control_panel.blink_114_cooper',
+      state: state('alarm_control_panel.blink_114_cooper', 'unknown')
     },
-    liveProxy: cameraPanel.liveProxyEntity ? state(cameraPanel.liveProxyEntity, 'unknown') : 'unknown',
+    liveProxy: state('binary_sensor.blink_liveview_proxy', 'unknown'),
     cameras: CAMERAS.map(cameraSummary)
   };
 }
 
 function modeSummary() {
-  const mode = CONFIG.panel?.mode || {};
-  if (mode.automationEnabled && valueRef(mode.automationEnabled, 'on') === 'off') {
+  if (state('input_boolean.hybrid_hvac_heat_control_enabled', 'on') === 'off') {
     return { type: 'paused', label: 'Paused', detail: 'Automation disabled' };
   }
-  if (mode.thermostatUnavailable && isOnRef(mode.thermostatUnavailable)) {
+  if (isOn('binary_sensor.hybrid_hvac_active_thermostat_unavailable')) {
     return { type: 'offline', label: 'Thermostat offline', detail: 'Active thermostat unavailable' };
   }
-  if (mode.heatDemand && isOnRef(mode.heatDemand)) {
-    return { type: 'heat', label: 'Heating', detail: 'Heat demand active' };
+  if (state('timer.hybrid_hvac_airflow_boost', 'idle') === 'active') {
+    return {
+      type: 'balance',
+      label: 'Balancing rooms',
+      detail: timerDetail('Airflow boost', 'timer.hybrid_hvac_airflow_boost'),
+      timer: timerInfo('Airflow', 'timer.hybrid_hvac_airflow_boost')
+    };
   }
-  if (mode.coolDemand && mode.humidityDemand && isOnRef(mode.coolDemand) && isOnRef(mode.humidityDemand)) {
-    return { type: 'dry', label: 'Cooling + dry', detail: 'Cooling with humidity pressure' };
+  if (state('timer.hybrid_hvac_dry_assist', 'idle') === 'active') {
+    return {
+      type: 'dry',
+      label: 'Drying air',
+      detail: timerDetail('Dry assist', 'timer.hybrid_hvac_dry_assist'),
+      timer: timerInfo('Drying', 'timer.hybrid_hvac_dry_assist')
+    };
   }
-  if (mode.coolDemand && isOnRef(mode.coolDemand)) {
-    return { type: 'cool', label: 'Cooling', detail: 'Cool demand active' };
+  if (state('timer.hybrid_hvac_post_dry_fan_purge', 'idle') === 'active') {
+    return {
+      type: 'fan',
+      label: 'Circulating air',
+      detail: timerDetail('Coil dry fan', 'timer.hybrid_hvac_post_dry_fan_purge'),
+      timer: timerInfo('Fan', 'timer.hybrid_hvac_post_dry_fan_purge')
+    };
   }
-  return { type: 'hold', label: 'Holding', detail: 'Inside comfort band' };
+  const operatingState = state('sensor.hybrid_hvac_operating_state', '');
+  const miniMode = state('climate.kitchen_mini_split', '');
+  const miniAction = state('sensor.gree_inferred_action', '');
+  if (miniMode === 'dry' || ['dry', 'drying', 'dehumidify'].includes(miniAction)) {
+    return { type: 'dry', label: 'Drying air', detail: 'Reducing humidity' };
+  }
+  if (isOn('binary_sensor.hybrid_hvac_heat_demand')) {
+    return { type: 'heat', label: 'Heating', detail: 'Warming the house' };
+  }
+  if (isOn('binary_sensor.hybrid_hvac_cool_demand') && isOn('binary_sensor.hybrid_hvac_dehumidify_recommended')) {
+    return { type: 'dry', label: 'Drying air', detail: 'Cooling with humidity pressure' };
+  }
+  if (isOn('binary_sensor.hybrid_hvac_cool_demand')) {
+    return { type: 'cool', label: 'Cooling', detail: 'Cooling the house' };
+  }
+  if (operatingState === 'gree_heating') {
+    return { type: 'heat', label: 'Heating', detail: 'Warming the house' };
+  }
+  if (operatingState === 'gree_cooling') {
+    return { type: 'cool', label: 'Cooling', detail: 'Cooling the house' };
+  }
+  if (miniMode === 'fan_only' || ['fan', 'fan_only'].includes(miniAction)) {
+    return { type: 'fan', label: 'Circulating air', detail: 'Fan only' };
+  }
+  return { type: 'hold', label: 'Comfort OK', detail: 'Inside comfort band' };
 }
 
 function comfortSummary() {
-  const comfort = CONFIG.panel?.comfort || {};
-  const heat = round(numberRef(comfort.heatTarget), 0);
-  const cool = round(numberRef(comfort.coolTarget), 0);
-  const holdActive = comfort.holdActive ? isOnRef(comfort.holdActive) : false;
-  const scheduleActive = comfort.scheduleEnabled ? isOnRef(comfort.scheduleEnabled) : false;
-  const period = valueRef(comfort.schedulePeriod, 'off');
-  const profile = valueRef(comfort.scheduleProfile, '');
+  const heat = round(numberState('sensor.hybrid_hvac_heat_target'), 0);
+  const cool = round(numberState('sensor.hybrid_hvac_cool_target'), 0);
+  const holdActive = isOn('input_boolean.hybrid_hvac_comfort_hold_active');
+  const scheduleActive = isOn('input_boolean.hybrid_hvac_schedule_enabled');
+  const period = state('sensor.hybrid_hvac_schedule_period', 'off');
+  const profile = state('sensor.hybrid_hvac_schedule_comfort_setting', '');
 
   let status = 'Thermostat range';
   if (holdActive) {
@@ -505,15 +596,66 @@ function comfortSummary() {
 }
 
 function dashboardState() {
-  const panel = CONFIG.panel || {};
-  const metrics = panel.metrics || {};
   const comfort = comfortSummary();
+  const ecobeeTemp = numberState('sensor.my_ecobee_current_temperature_2', numberAttr('climate.my_ecobee_3', 'current_temperature'));
+  const miniSplitTemp = numberAttr('climate.kitchen_mini_split', 'current_temperature');
+  const miniSplitMode = state('climate.kitchen_mini_split', 'unknown');
+  const miniSplitFanMode = attr('climate.kitchen_mini_split', 'fan_mode', '');
+  const greeAction = state('sensor.gree_inferred_action', 'unknown');
+  const avgTemp = numberState('sensor.hybrid_hvac_average_temperature', numberState('sensor.hybrid_hvac_room_temperature'));
   const sock = sockSummary();
-  const rooms = (panel.rooms || []).slice(0, 6).map(roomCard);
-  while (rooms.length < 6) {
-    rooms.push({ id: `empty_${rooms.length}`, label: '', temp: null, humidity: null, battery: null, extra: '' });
-  }
-  const avgTemp = numberRef(metrics.averageTemp, numberRef(metrics.roomTemp));
+  const rooms = [
+    roomCard(
+      'living',
+      'Living Room',
+      'sensor.sonoff_snzb_02dr2_temperature',
+      'sensor.sonoff_snzb_02dr2_humidity',
+      'sensor.sonoff_snzb_02dr2_battery'
+    ),
+    roomCard(
+      'master',
+      'Master Bedroom',
+      'sensor.sonoff_snzb_02dr2_temperature_2',
+      'sensor.sonoff_snzb_02dr2_humidity_2',
+      'sensor.sonoff_snzb_02dr2_battery_2'
+    ),
+    roomCard(
+      'rennis',
+      'Rennis Room',
+      'sensor.sonoff_snzb_02dr2_temperature_3',
+      'sensor.sonoff_snzb_02dr2_humidity_3',
+      'sensor.sonoff_snzb_02dr2_battery_3',
+      sock.status
+    ),
+    {
+      id: 'ecobee',
+      label: 'Ecobee',
+      temp: round(ecobeeTemp, 1),
+      humidity: round(numberAttr('climate.my_ecobee_3', 'current_humidity'), 1),
+      battery: null,
+      extra: hvacModeLabel(state('climate.my_ecobee_3', 'unknown'))
+    },
+    {
+      id: 'mini',
+      label: 'Mini Split',
+      temp: round(miniSplitTemp, 1),
+      humidity: null,
+      battery: null,
+      extra: '',
+      miniStatus: {
+        fan: miniFanLabel(miniSplitMode, miniSplitFanMode),
+        compressor: miniActionLabel(greeAction)
+      }
+    },
+    {
+      id: 'whole',
+      label: 'Whole Home',
+      temp: round(avgTemp, 1),
+      humidity: round(numberState('sensor.hybrid_hvac_room_humidity'), 1),
+      battery: null,
+      extra: comfort.status
+    }
+  ];
 
   return {
     ok: !lastError,
@@ -522,31 +664,51 @@ function dashboardState() {
     mode: modeSummary(),
     comfort,
     metrics: {
-      roomTemp: round(numberRef(metrics.roomTemp), 1),
-      roomHumidity: round(numberRef(metrics.roomHumidity), 1),
+      roomTemp: round(numberState('sensor.hybrid_hvac_room_temperature'), 1),
+      roomHumidity: round(numberState('sensor.hybrid_hvac_room_humidity'), 1),
       averageTemp: round(avgTemp, 1),
-      outsideTemp: round(numberRef(metrics.outsideTemp), 0),
-      greeAction: valueRef(metrics.action, 'unknown')
+      outsideTemp: round(numberState('sensor.gree_vireo_24k_outside_temperature'), 0),
+      cpuTemp: round(numberState('sensor.ha_server_cpu_temp'), 0),
+      ddrTemp: round(numberState('sensor.ha_server_ddr_temp'), 0),
+      ramUsed: round(numberState('sensor.ha_server_ram_used'), 0),
+      cpuLoad: round(numberState('sensor.ha_server_cpu_load'), 2),
+      diskUsed: round(numberState('sensor.ha_server_disk_used'), 0),
+      greeAction,
+      ecobeeTemp: round(ecobeeTemp, 1),
+      miniSplitTemp: round(miniSplitTemp, 1),
+      miniSplitMode: attr('climate.kitchen_mini_split', 'hvac_mode', miniSplitMode),
+      ecobeeMode: attr('climate.my_ecobee_3', 'hvac_mode', state('climate.my_ecobee_3', 'unknown'))
     },
+    alarm: {
+      entityId: 'alarm_control_panel.blink_114_cooper',
+      state: state('alarm_control_panel.blink_114_cooper', 'unknown')
+    },
+    balance: balanceAvailability(),
     rooms,
     sock
   };
 }
 
 function sockSummary() {
-  const statusPanel = CONFIG.panel?.statusPanel || {};
-  const heart = round(numberRef(statusPanel.heart), 0);
-  const oxygen = round(numberRef(statusPanel.oxygen), 0);
-  const oxygenAverage = round(numberRef(statusPanel.oxygenAverage), 0);
-  const battery = round(numberRef(statusPanel.battery), 0);
-  const remaining = round(numberRef(statusPanel.remaining), 0);
-  const signal = round(numberRef(statusPanel.signal), 0);
-  const skinTemp = round(numberRef(statusPanel.skinTemp), 1);
-  const sleep = valueRef(statusPanel.sleep, '');
-  const charging = statusPanel.charging ? isOnRef(statusPanel.charging) : false;
-  const sockOff = statusPanel.sockOff ? isOnRef(statusPanel.sockOff) : false;
-  const disconnected = statusPanel.disconnected ? isOnRef(statusPanel.disconnected) : false;
-  const alert = (statusPanel.alerts || []).some(isOnRef);
+  const heart = round(numberState('sensor.renni_s_smart_sock_heart_rate'), 0);
+  const oxygen = round(numberState('sensor.renni_s_smart_sock_o2_saturation'), 0);
+  const oxygenAverage = round(numberState('sensor.renni_s_smart_sock_o2_saturation_10_minute_average'), 0);
+  const battery = round(numberState('sensor.renni_s_smart_sock_battery_percentage'), 0);
+  const remaining = round(numberState('sensor.renni_s_smart_sock_battery_remaining'), 0);
+  const signal = round(numberState('sensor.renni_s_smart_sock_signal_strength'), 0);
+  const skinTemp = round(numberState('sensor.renni_s_smart_sock_skin_temperature'), 1);
+  const sleep = textState('sensor.renni_s_smart_sock_sleep_state', '');
+  const charging = isOn('binary_sensor.renni_s_smart_sock_charging');
+  const sockOff = isOn('binary_sensor.renni_s_smart_sock_sock_off');
+  const disconnected = isOn('binary_sensor.renni_s_smart_sock_sock_disconnected_alert');
+  const alert = [
+    'binary_sensor.renni_s_smart_sock_high_heart_rate_alert',
+    'binary_sensor.renni_s_smart_sock_low_heart_rate_alert',
+    'binary_sensor.renni_s_smart_sock_high_oxygen_alert',
+    'binary_sensor.renni_s_smart_sock_low_oxygen_alert',
+    'binary_sensor.renni_s_smart_sock_low_battery_alert',
+    'binary_sensor.renni_s_smart_sock_lost_power_alert'
+  ].some(isOn);
 
   let status = 'Standing by';
   if (alert) status = 'Alert';
@@ -572,41 +734,104 @@ function sockSummary() {
   };
 }
 
-async function processAssist(text) {
-  const prompt = String(text || '').trim();
-  if (!prompt) throw new Error('Assist prompt is empty.');
-  const response = await haFetch('/api/conversation/process', {
-    method: 'POST',
-    body: JSON.stringify({ text: prompt, language: 'en' })
-  });
+function balanceAvailability() {
+  const operatingState = state('sensor.hybrid_hvac_operating_state', 'unknown');
+  const miniMode = state('climate.kitchen_mini_split', 'unknown');
+  const manualOverride = state('timer.hybrid_hvac_airflow_manual_override', 'idle');
+  const focusZone = state('sensor.hybrid_hvac_airflow_focus_zone', 'unknown');
+  const validFocus = ['Living Room', 'Master Bedroom', 'Rennis Room'].includes(focusZone);
+  const activeDemand = ['gree_cooling', 'gree_heating'].includes(operatingState);
+  const reasons = [];
+
+  if (!activeDemand) reasons.push('Balance Rooms only runs while the mini split is actively heating or cooling.');
+  if (miniMode === 'fan_only') reasons.push('The mini split is already in fan-only mode.');
+  if (manualOverride !== 'idle') reasons.push('A manual airflow override is still active.');
+  if (!validFocus) reasons.push('There is not a room that needs an airflow boost right now.');
+
   return {
-    ok: true,
-    text: response?.response?.speech?.plain?.speech || 'Done.',
-    conversationId: response?.conversation_id || null,
-    responseType: response?.response?.response_type || null
+    canRun: reasons.length === 0,
+    reason: reasons[0] || 'Ready to balance rooms.',
+    detail: activeDemand
+      ? `Focus room: ${validFocus ? focusZone : 'none'}`
+      : `Current HVAC state: ${operatingState.replace(/_/g, ' ') || 'idle'}`,
+    operatingState,
+    focusZone,
+    manualOverride
   };
 }
 
-async function callAction(name) {
-  const action = CONFIG.panel?.actions?.[name];
-  if (!action?.service) throw new Error(`Unsupported action: ${name}`);
-  await callHaService(action.service, action.data || {});
+async function adjustComfortBand(direction, moveBand) {
+  if (!moveBand) {
+    await haFetch('/api/services/script/hybrid_hvac_adjust_comfort_temperature', {
+      method: 'POST',
+      body: JSON.stringify({ direction, step: 1 })
+    });
+    return;
+  }
+
+  const heat = numberState('sensor.hybrid_hvac_heat_target');
+  const cool = numberState('sensor.hybrid_hvac_cool_target');
+  if (!Number.isFinite(heat) || !Number.isFinite(cool) || cool <= heat) {
+    throw new Error('Comfort band is unavailable.');
+  }
+
+  const center = (heat + cool) / 2;
+  const nextHeat = direction === 'down' ? (center - 1) - (cool - heat) : center + 1;
+  const adjustment = nextHeat - heat;
+  await haFetch('/api/services/script/hybrid_hvac_adjust_comfort_temperature', {
+    method: 'POST',
+    body: JSON.stringify({
+      direction: adjustment >= 0 ? 'up' : 'down',
+      step: Math.max(0.5, Math.abs(adjustment))
+    })
+  });
 }
 
-async function callHaService(service, data = {}) {
-  const [domain, serviceName] = String(service || '').split('.');
-  if (!domain || !serviceName) throw new Error(`Invalid service: ${service}`);
-  await haFetch(`/api/services/${encodeURIComponent(domain)}/${encodeURIComponent(serviceName)}`, {
-    method: 'POST',
-    body: JSON.stringify(data)
-  });
+async function callAction(name, options = {}) {
+  if (name === 'blinkToggle') {
+    const alarmEntity = 'alarm_control_panel.blink_114_cooper';
+    const armed = state(alarmEntity, 'unknown').startsWith('armed');
+    await haFetch(`/api/services/alarm_control_panel/${armed ? 'alarm_disarm' : 'alarm_arm_away'}`, {
+      method: 'POST',
+      body: JSON.stringify({ entity_id: alarmEntity })
+    });
+    await pollStates(true).catch(() => {});
+    return;
+  }
+
+  if (name === 'cooler') {
+    await adjustComfortBand('down', Boolean(options.moveBand));
+    return;
+  }
+
+  if (name === 'warmer') {
+    await adjustComfortBand('up', Boolean(options.moveBand));
+    return;
+  }
+
+  if (name === 'reset') {
+    await haFetch('/api/services/script/hybrid_hvac_reset_gree_target', {
+      method: 'POST',
+      body: JSON.stringify({})
+    });
+    return;
+  }
+
+  if (name === 'assist') {
+    await haFetch('/api/services/script/hybrid_hvac_start_airflow_assist_now', {
+      method: 'POST',
+      body: JSON.stringify({})
+    });
+    return;
+  }
+
+  throw new Error(`Unsupported action: ${name}`);
 }
 
 async function refreshCameraSnapshot(slug) {
   const camera = cameraConfig(slug);
   if (!camera) throw new Error(`Unknown camera: ${slug}`);
-  const pathTemplate = camera.snapshotRefreshPath || CONFIG.cameraPanel?.snapshotRefreshPath || '/api/blink_liveview_proxy/cameras/{slug}/snapshot-refresh';
-  await haFetch(pathTemplate.replaceAll('{slug}', encodeURIComponent(slug)), {
+  await haFetch(`/api/blink_liveview_proxy/cameras/${encodeURIComponent(slug)}/snapshot-refresh`, {
     method: 'POST',
     body: JSON.stringify({})
   });
@@ -650,8 +875,7 @@ async function fetchCameraSnapshot(slug) {
 
 async function clipsForCamera(slug) {
   if (!cameraConfig(slug)) throw new Error(`Unknown camera: ${slug}`);
-  const template = CONFIG.cameraPanel?.clipsPath || '/api/blink_liveview_proxy/clips?camera={slug}&hours=24&limit=20';
-  return haFetch(template.replaceAll('{slug}', encodeURIComponent(slug)));
+  return haFetch(`/api/blink_liveview_proxy/clips?camera=${encodeURIComponent(slug)}&hours=24&limit=20`);
 }
 
 function readJson(req) {
@@ -685,16 +909,12 @@ function sendJson(res, status, body) {
 }
 
 function clientHtml() {
-  const panel = CONFIG.panel || {};
-  const labels = panel.labels || {};
-  const title = panel.title || CONFIG.name || 'HA Light Panel';
-  const statusLabel = panel.statusPanel?.label || 'Status';
   return `<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
-  <title>${escapeHtml(title)}</title>
+  <title>Frameo Climate</title>
   <style>
     html,
     body {
@@ -797,79 +1017,69 @@ function clientHtml() {
       stroke-width: 1;
     }
 
-    #assistPanel {
+    .pending .pending-dim {
+      opacity: 0.68;
+    }
+
+    .action-spinner {
+      display: none;
+      pointer-events: none;
+    }
+
+    .pending .action-spinner {
+      display: block;
+    }
+
+    .modal-backdrop {
       position: fixed;
       inset: 0;
-      display: none;
-      align-items: center;
-      justify-content: center;
-      background: rgba(0,0,0,0.56);
-      touch-action: manipulation;
-    }
-
-    #assistPanel.open {
-      display: flex;
-    }
-
-    .assist-box {
-      width: min(760px, calc(100vw - 44px));
-      padding: 18px;
-      border: 1px solid rgba(255,255,255,0.16);
-      border-radius: 8px;
-      background: #0f1d29;
-      box-shadow: 0 18px 48px rgba(0,0,0,0.34);
-    }
-
-    .assist-title {
-      margin-bottom: 12px;
-      color: rgba(248,250,252,0.76);
-      font-size: 18px;
-      font-weight: 800;
-    }
-
-    .assist-row {
       display: grid;
-      grid-template-columns: minmax(0, 1fr) 96px 96px;
-      gap: 10px;
+      place-items: center;
+      background: rgba(2,6,10,0.58);
+      z-index: 4;
     }
 
-    #assistInput {
-      min-width: 0;
-      height: 54px;
-      padding: 0 14px;
-      border: 1px solid rgba(255,255,255,0.18);
+    .modal-backdrop.hidden {
+      display: none;
+    }
+
+    .modal {
+      width: min(480px, calc(100vw - 48px));
       border-radius: 8px;
-      background: #071017;
-      color: #fff;
-      font: 700 20px Inter, Roboto, Arial, sans-serif;
-      touch-action: manipulation;
+      padding: 24px;
+      background: #0f1d29;
+      border: 1px solid rgba(255,255,255,0.14);
+      box-shadow: 0 24px 72px rgba(0,0,0,0.45);
     }
 
-    .assist-box button {
+    .modal-title {
+      margin: 0 0 10px;
+      font-size: 24px;
+      font-weight: 850;
+    }
+
+    .modal-body {
+      margin: 0 0 20px;
+      color: rgba(248,250,252,0.76);
+      font-size: 17px;
+      line-height: 1.38;
+    }
+
+    .modal-button {
       border: 0;
       border-radius: 8px;
-      color: #fff;
-      font: 800 17px Inter, Roboto, Arial, sans-serif;
-      background: #4f46e5;
-      touch-action: manipulation;
+      padding: 13px 20px;
+      background: #38bdf8;
+      color: #03111c;
+      font: inherit;
+      font-size: 17px;
+      font-weight: 850;
     }
 
-    #assistClose {
-      background: #334155;
-    }
-
-    #assistAnswer {
-      min-height: 26px;
-      margin-top: 14px;
-      color: rgba(248,250,252,0.86);
-      font-size: 18px;
-      font-weight: 700;
-      line-height: 1.35;
-    }
   </style>
 </head>
 <body>
-  <svg id="dash" viewBox="0 0 1280 800" role="img" aria-label="${escapeHtml(title)}">
+  <svg id="dash" viewBox="0 0 1280 800" role="img" aria-label="Frameo climate dashboard">
     <defs>
       <linearGradient id="bg" x1="0" x2="1" y1="0" y2="1">
         <stop offset="0" stop-color="#0b1f28"/>
@@ -897,36 +1107,48 @@ function clientHtml() {
     <rect width="1280" height="800" fill="url(#bg)"/>
 
     <g id="topCards">
-      <g transform="translate(24 20)">
-        <rect id="modeCard" width="230" height="112" rx="8" fill="url(#modeGrad)"/>
-        <text x="18" y="38" class="label">${escapeHtml(labels.mode || 'Current mode')}</text>
-        <text id="modeLabel" x="18" y="78" class="value">--</text>
+      <g class="button" data-action="blinkToggle" transform="translate(24 20)">
+        <rect id="blinkCard" class="pending-dim" width="230" height="112" rx="8" fill="#334155"/>
+        <text x="18" y="38" class="label">Blink system</text>
+        <text id="blinkState" x="18" y="78" class="value">--</text>
+        <text id="blinkHint" x="18" y="99" class="tiny">Tap to arm</text>
+        <g class="action-spinner" data-spinner="blinkToggle" transform="translate(204 34)">
+          <circle r="12" fill="none" stroke="rgba(255,255,255,0.86)" stroke-width="4" stroke-linecap="round" stroke-dasharray="20 56">
+            <animateTransform attributeName="transform" type="rotate" from="0" to="360" dur="0.8s" repeatCount="indefinite"/>
+          </circle>
+        </g>
       </g>
       <g transform="translate(270 20)">
-        <rect class="card" width="230" height="112" rx="8"/>
-        <text x="18" y="38" class="label">${escapeHtml(labels.homeTemp || 'Home temp')}</text>
-        <text id="roomTemp" x="18" y="78" class="value">--</text>
+        <rect id="modeCard" width="230" height="112" rx="8" fill="url(#modeGrad)"/>
+        <text x="18" y="38" class="label">Current mode</text>
+        <text id="modeLabel" x="18" y="78" class="value">--</text>
+        <g id="modeTimerGroup" transform="translate(18 91)" style="display:none">
+          <rect width="146" height="6" rx="3" fill="rgba(255,255,255,0.24)"/>
+          <rect id="modeTimerBar" width="0" height="6" rx="3" fill="rgba(255,255,255,0.88)"/>
+          <text id="modeTimerText" x="158" y="8" class="tiny">--</text>
+        </g>
       </g>
       <g transform="translate(516 20)">
         <rect class="card" width="230" height="112" rx="8"/>
-        <text x="18" y="38" class="label">${escapeHtml(labels.humidity || 'Humidity')}</text>
-        <text id="humidity" x="18" y="78" class="value">--</text>
+        <text x="18" y="38" class="label">Comfort band</text>
+        <text id="band" x="18" y="78" class="value">--</text>
       </g>
       <g transform="translate(762 20)">
         <rect class="card" width="230" height="112" rx="8"/>
-        <text x="18" y="38" class="label">${escapeHtml(labels.comfortBand || 'Comfort band')}</text>
-        <text id="band" x="18" y="78" class="value">--</text>
+        <text x="18" y="38" class="label">Outside</text>
+        <text id="outside" x="18" y="78" class="value">--</text>
       </g>
       <g transform="translate(1008 20)">
-        <rect class="card" width="248" height="112" rx="8"/>
-        <text x="18" y="38" class="label">${escapeHtml(labels.outside || 'Outside')}</text>
-        <text id="outside" x="18" y="78" class="value">--</text>
+        <rect id="systemCard" class="card" width="248" height="112" rx="8"/>
+        <text x="18" y="38" class="label">HA box</text>
+        <text id="systemTemps" x="18" y="72" fill="#fff" font-size="28" font-weight="900">--</text>
+        <text id="systemLoad" x="18" y="99" class="tiny">--</text>
       </g>
     </g>
 
     <g id="roomsPanel" transform="translate(24 156)">
       <rect width="776" height="620" rx="8" fill="#071017" stroke="rgba(255,255,255,0.08)"/>
-      <text x="24" y="42" class="label">${escapeHtml(labels.rooms || 'Rooms & thermostats')}</text>
+      <text x="24" y="42" class="label">Rooms & thermostats</text>
       <text id="roomsSubtitle" x="24" y="70" class="small">Live comfort readings</text>
 
       <g id="roomCard0" transform="translate(24 94)">
@@ -944,19 +1166,6 @@ function clientHtml() {
           <text id="roomBattery0" x="36" y="17" class="small">--</text>
         </g>
         <text id="roomExtra0" x="20" y="178" class="tiny">--</text>
-        <g id="roomMiniFanGroup0" transform="translate(20 160)">
-          <circle class="metric-icon" cx="11" cy="11" r="2.2"/>
-          <path class="metric-icon" d="M11 8 C8 3 13 1 16 5 C14 6 12.5 7 11 8"/>
-          <path class="metric-icon" d="M13 12 C19 11 19 17 14 18 C14 15 13.7 13.5 13 12"/>
-          <path class="metric-icon" d="M9 12 C6 17 1 14 3 9 C5 11 7 11.7 9 12"/>
-          <text id="roomMiniFan0" x="30" y="17" class="tiny">--</text>
-        </g>
-        <g id="roomMiniCompressorGroup0" transform="translate(118 160)">
-          <rect class="metric-icon" x="0" y="5" width="24" height="14" rx="3"/>
-          <path class="metric-icon" d="M5 10 H19"/>
-          <path class="metric-icon" d="M5 14 H15"/>
-          <text id="roomMiniCompressor0" x="32" y="17" class="tiny">--</text>
-        </g>
       </g>
 
       <g id="roomCard1" transform="translate(275 94)">
@@ -974,19 +1183,6 @@ function clientHtml() {
           <text id="roomBattery1" x="36" y="17" class="small">--</text>
         </g>
         <text id="roomExtra1" x="20" y="178" class="tiny">--</text>
-        <g id="roomMiniFanGroup1" transform="translate(20 160)">
-          <circle class="metric-icon" cx="11" cy="11" r="2.2"/>
-          <path class="metric-icon" d="M11 8 C8 3 13 1 16 5 C14 6 12.5 7 11 8"/>
-          <path class="metric-icon" d="M13 12 C19 11 19 17 14 18 C14 15 13.7 13.5 13 12"/>
-          <path class="metric-icon" d="M9 12 C6 17 1 14 3 9 C5 11 7 11.7 9 12"/>
-          <text id="roomMiniFan1" x="30" y="17" class="tiny">--</text>
-        </g>
-        <g id="roomMiniCompressorGroup1" transform="translate(118 160)">
-          <rect class="metric-icon" x="0" y="5" width="24" height="14" rx="3"/>
-          <path class="metric-icon" d="M5 10 H19"/>
-          <path class="metric-icon" d="M5 14 H15"/>
-          <text id="roomMiniCompressor1" x="32" y="17" class="tiny">--</text>
-        </g>
       </g>
 
       <g id="roomCard2" transform="translate(526 94)">
@@ -1004,19 +1200,6 @@ function clientHtml() {
           <text id="roomBattery2" x="36" y="17" class="small">--</text>
         </g>
         <text id="roomExtra2" x="20" y="178" class="tiny">--</text>
-        <g id="roomMiniFanGroup2" transform="translate(20 160)">
-          <circle class="metric-icon" cx="11" cy="11" r="2.2"/>
-          <path class="metric-icon" d="M11 8 C8 3 13 1 16 5 C14 6 12.5 7 11 8"/>
-          <path class="metric-icon" d="M13 12 C19 11 19 17 14 18 C14 15 13.7 13.5 13 12"/>
-          <path class="metric-icon" d="M9 12 C6 17 1 14 3 9 C5 11 7 11.7 9 12"/>
-          <text id="roomMiniFan2" x="30" y="17" class="tiny">--</text>
-        </g>
-        <g id="roomMiniCompressorGroup2" transform="translate(118 160)">
-          <rect class="metric-icon" x="0" y="5" width="24" height="14" rx="3"/>
-          <path class="metric-icon" d="M5 10 H19"/>
-          <path class="metric-icon" d="M5 14 H15"/>
-          <text id="roomMiniCompressor2" x="32" y="17" class="tiny">--</text>
-        </g>
       </g>
 
       <g id="roomCard3" transform="translate(24 330)">
@@ -1034,19 +1217,6 @@ function clientHtml() {
           <text id="roomBattery3" x="36" y="17" class="small">--</text>
         </g>
         <text id="roomExtra3" x="20" y="178" class="tiny">--</text>
-        <g id="roomMiniFanGroup3" transform="translate(20 160)">
-          <circle class="metric-icon" cx="11" cy="11" r="2.2"/>
-          <path class="metric-icon" d="M11 8 C8 3 13 1 16 5 C14 6 12.5 7 11 8"/>
-          <path class="metric-icon" d="M13 12 C19 11 19 17 14 18 C14 15 13.7 13.5 13 12"/>
-          <path class="metric-icon" d="M9 12 C6 17 1 14 3 9 C5 11 7 11.7 9 12"/>
-          <text id="roomMiniFan3" x="30" y="17" class="tiny">--</text>
-        </g>
-        <g id="roomMiniCompressorGroup3" transform="translate(118 160)">
-          <rect class="metric-icon" x="0" y="5" width="24" height="14" rx="3"/>
-          <path class="metric-icon" d="M5 10 H19"/>
-          <path class="metric-icon" d="M5 14 H15"/>
-          <text id="roomMiniCompressor3" x="32" y="17" class="tiny">--</text>
-        </g>
       </g>
 
       <g id="roomCard4" transform="translate(275 330)">
@@ -1094,25 +1264,28 @@ function clientHtml() {
           <text id="roomBattery5" x="36" y="17" class="small">--</text>
         </g>
         <text id="roomExtra5" x="20" y="178" class="tiny">--</text>
-        <g id="roomMiniFanGroup5" transform="translate(20 160)">
-          <circle class="metric-icon" cx="11" cy="11" r="2.2"/>
-          <path class="metric-icon" d="M11 8 C8 3 13 1 16 5 C14 6 12.5 7 11 8"/>
-          <path class="metric-icon" d="M13 12 C19 11 19 17 14 18 C14 15 13.7 13.5 13 12"/>
-          <path class="metric-icon" d="M9 12 C6 17 1 14 3 9 C5 11 7 11.7 9 12"/>
-          <text id="roomMiniFan5" x="30" y="17" class="tiny">--</text>
+      </g>
+
+      <g class="button" data-action="assist" transform="translate(24 558)">
+        <rect class="pending-dim" width="728" height="44" rx="8" fill="#4f46e5"/>
+        <g transform="translate(224 9)">
+          <path d="M2 23 C13 23 15 7 27 7" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round"/>
+          <path d="M2 10 C11 10 14 15 22 15" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round"/>
+          <path d="M23 3 L30 7 L23 12" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M17 11 L24 15 L17 20" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
         </g>
-        <g id="roomMiniCompressorGroup5" transform="translate(118 160)">
-          <rect class="metric-icon" x="0" y="5" width="24" height="14" rx="3"/>
-          <path class="metric-icon" d="M5 10 H19"/>
-          <path class="metric-icon" d="M5 14 H15"/>
-          <text id="roomMiniCompressor5" x="32" y="17" class="tiny">--</text>
+        <text x="364" y="30" text-anchor="middle" fill="#fff" font-size="24" font-weight="850">Balance Rooms</text>
+        <g class="action-spinner" data-spinner="assist" transform="translate(690 22)">
+          <circle r="10" fill="none" stroke="rgba(255,255,255,0.86)" stroke-width="3.5" stroke-linecap="round" stroke-dasharray="17 48">
+            <animateTransform attributeName="transform" type="rotate" from="0" to="360" dur="0.8s" repeatCount="indefinite"/>
+          </circle>
         </g>
       </g>
     </g>
 
     <g id="controls" transform="translate(824 156)">
       <rect width="432" height="620" rx="8" fill="#0f1d29" stroke="rgba(255,255,255,0.08)"/>
-      <text x="28" y="42" class="label">${escapeHtml(labels.target || 'Family target')}</text>
+      <text x="28" y="42" class="label">Family target</text>
       <text id="targetMain" x="28" y="108" fill="#fff" font-size="64" font-weight="900">--</text>
       <text id="targetDetail" x="30" y="138" class="small">--</text>
 
@@ -1128,49 +1301,64 @@ function clientHtml() {
         <text x="88" y="74" text-anchor="middle" class="tiny">Warmer</text>
       </g>
 
-      <g class="button" data-action="reset" transform="translate(28 268)">
+      <g class="button" data-toggle="moveBand" transform="translate(30 260)">
+        <rect id="moveBandBox" width="28" height="28" rx="6" fill="#071017" stroke="rgba(255,255,255,0.36)" stroke-width="2"/>
+        <path id="moveBandCheck" d="M7 15 L12 20 L22 8" fill="none" stroke="#fff" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round" style="display:none"/>
+        <text x="42" y="21" class="small">Move comfort band</text>
+      </g>
+
+      <g class="button" data-action="reset" transform="translate(28 302)">
         <rect width="376" height="64" rx="8" fill="url(#resetGrad)"/>
         <text x="188" y="42" text-anchor="middle" fill="#fff" font-size="27" font-weight="850">Reset Target</text>
       </g>
 
-      <g id="sockPanel" transform="translate(28 354)">
+      <g id="sockPanel" transform="translate(28 376)">
         <rect id="sockFill" width="376" height="142" rx="8" fill="#0a1620" stroke="rgba(255,255,255,0.08)"/>
-        <text x="18" y="32" class="small">${escapeHtml(statusLabel)}</text>
+        <text x="18" y="32" class="small">Renni's sock</text>
         <text id="sockStatus" x="18" y="62" fill="#fff" font-size="28" font-weight="850">--</text>
-        <text x="18" y="100" class="tiny">Heart</text>
-        <text id="sockHeart" x="18" y="124" fill="#fff" font-size="24" font-weight="850">--</text>
-        <text x="122" y="100" class="tiny">O2</text>
-        <text id="sockOxygen" x="122" y="124" fill="#fff" font-size="24" font-weight="850">--</text>
-        <text x="220" y="100" class="tiny">Battery</text>
-        <text id="sockBattery" x="220" y="124" fill="#fff" font-size="24" font-weight="850">--</text>
+        <g id="sockHeartMetric" transform="translate(24 96)">
+          <rect width="126" height="32" fill="transparent"/>
+          <path class="metric-icon" d="M11 21 C5 16 2 13 2 8.8 C2 5.8 4.2 3.8 7 3.8 C8.8 3.8 10.2 4.7 11 6 C11.8 4.7 13.2 3.8 15 3.8 C17.8 3.8 20 5.8 20 8.8 C20 13 17 16 11 21 Z"/>
+          <text id="sockHeart" x="42" y="20" fill="#fff" font-size="22" font-weight="850">--</text>
+        </g>
+        <g id="sockOxygenMetric" transform="translate(172 96)">
+          <rect width="82" height="32" fill="transparent"/>
+          <circle class="metric-icon" cx="11" cy="12" r="9"/>
+          <text x="11" y="16" text-anchor="middle" fill="rgba(248,250,252,0.72)" font-size="9" font-weight="900">O2</text>
+          <text id="sockOxygen" x="38" y="20" fill="#fff" font-size="22" font-weight="850">--</text>
+        </g>
+        <g id="sockBatteryMetric" transform="translate(278 99)">
+          <rect width="76" height="29" fill="transparent"/>
+          <rect class="metric-icon" x="0" y="4" width="22" height="13" rx="3"/>
+          <path class="metric-icon" d="M25 8 L25 13"/>
+          <text id="sockBattery" x="38" y="17" fill="#fff" font-size="22" font-weight="850">--</text>
+        </g>
         <text id="sockSignal" x="300" y="32" text-anchor="start" class="tiny">--</text>
       </g>
 
-      <g class="button" id="camerasButton" transform="translate(28 520)">
-        <rect width="178" height="70" rx="8" fill="#0f766e"/>
-        <text x="89" y="34" text-anchor="middle" fill="#fff" font-size="25" font-weight="850">Cameras</text>
-        <text x="89" y="56" text-anchor="middle" class="tiny">Snapshots</text>
-      </g>
-
-      <g class="button" id="assistButton" transform="translate(226 520)">
-        <rect width="178" height="70" rx="8" fill="#4f46e5"/>
-        <text x="89" y="34" text-anchor="middle" fill="#fff" font-size="25" font-weight="850">Assist</text>
-        <text x="89" y="56" text-anchor="middle" class="tiny">Ask HA</text>
+      <g class="button" id="camerasButton" transform="translate(28 532)">
+        <rect width="376" height="70" rx="8" fill="#0f766e"/>
+        <g transform="translate(112 17)">
+          <rect width="44" height="36" fill="transparent"/>
+          <g transform="translate(7 5)">
+          <rect x="0" y="4" width="30" height="22" rx="5" fill="none" stroke="#fff" stroke-width="3"/>
+          <path d="M9 4 L13 0 H22 L26 4" fill="none" stroke="#fff" stroke-width="3" stroke-linejoin="round"/>
+          <circle cx="15" cy="15" r="5" fill="none" stroke="#fff" stroke-width="3"/>
+          </g>
+        </g>
+        <rect x="166" y="16" width="108" height="42" fill="transparent"/>
+        <text x="220" y="43" text-anchor="middle" fill="#fff" font-size="25" font-weight="850">Cameras</text>
       </g>
     </g>
 
     <text id="connection" x="1254" y="792" text-anchor="end" class="tiny">connecting</text>
   </svg>
 
-  <div id="assistPanel" aria-hidden="true">
-    <div class="assist-box">
-      <div class="assist-title">Assist</div>
-      <div class="assist-row">
-        <input id="assistInput" autocomplete="off" placeholder="Ask Home Assistant">
-        <button id="assistSend" type="button">Ask</button>
-        <button id="assistClose" type="button">Close</button>
-      </div>
-      <div id="assistAnswer"></div>
+  <div id="infoModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="infoModalTitle">
+    <div class="modal">
+      <h2 id="infoModalTitle" class="modal-title">Balance Rooms</h2>
+      <p id="infoModalBody" class="modal-body">Balance Rooms only runs while heating or cooling is already active.</p>
+      <button id="infoModalClose" class="modal-button" type="button">Got it</button>
     </div>
   </div>
 
@@ -1179,10 +1367,19 @@ function clientHtml() {
       modeLabel: document.getElementById('modeLabel'),
       modeGradA: document.getElementById('modeGradA'),
       modeGradB: document.getElementById('modeGradB'),
-      roomTemp: document.getElementById('roomTemp'),
-      humidity: document.getElementById('humidity'),
+      modeTimerGroup: document.getElementById('modeTimerGroup'),
+      modeTimerBar: document.getElementById('modeTimerBar'),
+      modeTimerText: document.getElementById('modeTimerText'),
+      blinkCard: document.getElementById('blinkCard'),
+      blinkState: document.getElementById('blinkState'),
+      blinkHint: document.getElementById('blinkHint'),
       band: document.getElementById('band'),
       outside: document.getElementById('outside'),
+      systemCard: document.getElementById('systemCard'),
+      systemTemps: document.getElementById('systemTemps'),
+      systemLoad: document.getElementById('systemLoad'),
+      moveBandBox: document.getElementById('moveBandBox'),
+      moveBandCheck: document.getElementById('moveBandCheck'),
       targetMain: document.getElementById('targetMain'),
       targetDetail: document.getElementById('targetDetail'),
       roomsSubtitle: document.getElementById('roomsSubtitle'),
@@ -1192,14 +1389,17 @@ function clientHtml() {
       sockOxygen: document.getElementById('sockOxygen'),
       sockBattery: document.getElementById('sockBattery'),
       sockSignal: document.getElementById('sockSignal'),
-      assistButton: document.getElementById('assistButton'),
       camerasButton: document.getElementById('camerasButton'),
-      assistPanel: document.getElementById('assistPanel'),
-      assistInput: document.getElementById('assistInput'),
-      assistSend: document.getElementById('assistSend'),
-      assistClose: document.getElementById('assistClose'),
-      assistAnswer: document.getElementById('assistAnswer'),
-      connection: document.getElementById('connection')
+      connection: document.getElementById('connection'),
+      infoModal: document.getElementById('infoModal'),
+      infoModalTitle: document.getElementById('infoModalTitle'),
+      infoModalBody: document.getElementById('infoModalBody'),
+      infoModalClose: document.getElementById('infoModalClose')
+    };
+
+    const appState = {
+      latest: null,
+      moveBand: localStorage.getItem('frameoMoveBand') !== 'false'
     };
 
     const roomNodes = Array.from({ length: 6 }, (_, index) => ({
@@ -1223,6 +1423,8 @@ function clientHtml() {
       heat: ['#fb923c', '#b91c1c'],
       cool: ['#38bdf8', '#1d4ed8'],
       dry: ['#38bdf8', '#b45309'],
+      balance: ['#a78bfa', '#4f46e5'],
+      fan: ['#2dd4bf', '#0f766e'],
       paused: ['#ef4444', '#581c87'],
       offline: ['#f59e0b', '#7c2d12'],
       hold: ['#22c55e', '#047857']
@@ -1233,11 +1435,33 @@ function clientHtml() {
       id.textContent = value;
     }
 
+    function setFittedText(id, value, maxWidth, baseSize = 22, minSize = 18) {
+      if (!id) return;
+      id.textContent = value;
+      id.setAttribute('font-size', String(baseSize));
+      if (!maxWidth || typeof id.getComputedTextLength !== 'function') return;
+      try {
+        let size = baseSize;
+        while (size > minSize && id.getComputedTextLength() > maxWidth) {
+          size -= 1;
+          id.setAttribute('font-size', String(size));
+        }
+      } catch (error) {}
+    }
+
     function setModeText(value) {
       if (!els.modeLabel) return;
-      els.modeLabel.textContent = value;
-      const length = String(value || '').length;
-      els.modeLabel.style.fontSize = length > 15 ? '22px' : length > 11 ? '27px' : '34px';
+      setFittedText(els.modeLabel, value, 198, 31, 18);
+    }
+
+    function setModeTimer(timer) {
+      const visible = Boolean(timer && timer.remaining);
+      setVisible(els.modeTimerGroup, visible);
+      if (!visible) return;
+      const progress = Number.isFinite(timer.progress) ? Math.max(0, Math.min(1, timer.progress)) : 1;
+      els.modeTimerBar.setAttribute('width', String(Math.max(6, Math.round(146 * progress))));
+      const minutes = Number.isFinite(timer.remainingSeconds) ? Math.ceil(timer.remainingSeconds / 60) : null;
+      setText(els.modeTimerText, Number.isFinite(minutes) ? minutes + 'm' : timer.remaining);
     }
 
     function temp(value, places = 0) {
@@ -1251,6 +1475,32 @@ function clientHtml() {
     function setVisible(node, visible) {
       if (!node) return;
       node.style.display = visible ? '' : 'none';
+    }
+
+    function setPending(name, pending) {
+      document.querySelectorAll('[data-action="' + name + '"]').forEach(node => {
+        node.classList.toggle('pending', pending);
+      });
+    }
+
+    function setMoveBand(enabled) {
+      appState.moveBand = Boolean(enabled);
+      localStorage.setItem('frameoMoveBand', String(appState.moveBand));
+      if (els.moveBandCheck) els.moveBandCheck.style.display = appState.moveBand ? '' : 'none';
+      if (els.moveBandBox) {
+        els.moveBandBox.setAttribute('fill', appState.moveBand ? '#0f766e' : '#071017');
+        els.moveBandBox.setAttribute('stroke', appState.moveBand ? 'rgba(45,212,191,0.78)' : 'rgba(255,255,255,0.36)');
+      }
+    }
+
+    function showModal(title, body) {
+      setText(els.infoModalTitle, title);
+      setText(els.infoModalBody, body);
+      if (els.infoModal) els.infoModal.classList.remove('hidden');
+    }
+
+    function hideModal() {
+      if (els.infoModal) els.infoModal.classList.add('hidden');
     }
 
     function setRoomMetrics(node, room) {
@@ -1274,8 +1524,8 @@ function clientHtml() {
 
       setVisible(node.miniFanGroup, Boolean(miniStatus));
       setVisible(node.miniCompressorGroup, Boolean(miniStatus));
-      setText(node.miniFan, miniStatus ? miniStatus.fan || '--' : '');
-      setText(node.miniCompressor, miniStatus ? miniStatus.compressor || '--' : '');
+      setFittedText(node.miniFan, miniStatus ? miniStatus.fan || '--' : '', 62, 13, 11);
+      setFittedText(node.miniCompressor, miniStatus ? miniStatus.compressor || '--' : '', 54, 13, 11);
     }
 
     function compactTime(iso) {
@@ -1329,14 +1579,43 @@ function clientHtml() {
       return [0, 2, 4].map(index => parseInt(clean.slice(index, index + 2), 16));
     }
 
+    function applyAlarm(alarm) {
+      const raw = String(alarm && alarm.state || 'unknown');
+      const armed = raw.startsWith('armed');
+      const pending = raw === 'arming' || raw === 'pending';
+      const label = armed ? 'Armed' : raw === 'disarmed' ? 'Disarmed' : titleCase(raw);
+      setText(els.blinkState, label);
+      setText(els.blinkHint, armed ? 'Tap to disarm' : pending ? 'Changing state' : 'Tap to arm');
+      if (els.blinkCard) {
+        els.blinkCard.setAttribute('fill', armed ? '#7f1d1d' : pending ? '#854d0e' : '#065f46');
+      }
+    }
+
+    function applySystem(metrics) {
+      const cpuTemp = Number.isFinite(metrics.cpuTemp) ? metrics.cpuTemp + '\u00b0C' : '--';
+      const ddrTemp = Number.isFinite(metrics.ddrTemp) ? metrics.ddrTemp + '\u00b0C' : '--';
+      const ram = Number.isFinite(metrics.ramUsed) ? metrics.ramUsed + '% RAM' : 'RAM --';
+      const disk = Number.isFinite(metrics.diskUsed) ? metrics.diskUsed + '% disk' : 'disk --';
+      const load = Number.isFinite(metrics.cpuLoad) ? 'load ' + metrics.cpuLoad.toFixed(2) : 'load --';
+      setFittedText(els.systemTemps, 'CPU ' + cpuTemp + ' / DDR ' + ddrTemp, 212, 28, 22);
+      setText(els.systemLoad, ram + ' | ' + disk + ' | ' + load);
+      if (els.systemCard) {
+        const hot = Number.isFinite(metrics.cpuTemp) && metrics.cpuTemp >= 65 || Number.isFinite(metrics.ddrTemp) && metrics.ddrTemp >= 65;
+        const warm = Number.isFinite(metrics.cpuTemp) && metrics.cpuTemp >= 55 || Number.isFinite(metrics.ddrTemp) && metrics.ddrTemp >= 55;
+        els.systemCard.setAttribute('stroke', hot ? 'rgba(248,113,113,0.68)' : warm ? 'rgba(251,191,36,0.56)' : 'rgba(255,255,255,0.08)');
+      }
+    }
+
     function applyState(data) {
+      appState.latest = data;
       const colors = modeColors[data.mode.type] || modeColors.hold;
       els.modeGradA.setAttribute('stop-color', colors[0]);
       els.modeGradB.setAttribute('stop-color', colors[1]);
 
       setModeText(data.mode.label);
-      setText(els.roomTemp, temp(data.metrics.roomTemp, 1));
-      setText(els.humidity, pct(data.metrics.roomHumidity));
+      setModeTimer(data.mode.timer);
+      applyAlarm(data.alarm);
+      applySystem(data.metrics);
       setText(els.band, Number.isFinite(data.comfort.heat) && Number.isFinite(data.comfort.cool) ? data.comfort.heat + ' - ' + data.comfort.cool + ' F' : '--');
       setText(els.outside, temp(data.metrics.outsideTemp, 0));
 
@@ -1360,9 +1639,10 @@ function clientHtml() {
 
       const sock = data.sock || {};
       setText(els.sockStatus, sock.status || '--');
-      setText(els.sockHeart, Number.isFinite(sock.heart) ? sock.heart + ' bpm' : '--');
-      setText(els.sockOxygen, Number.isFinite(sock.oxygen) ? sock.oxygen + '%' : Number.isFinite(sock.oxygenAverage) ? sock.oxygenAverage + '% avg' : '--');
-      setText(els.sockBattery, Number.isFinite(sock.battery) ? sock.battery + '%' : '--');
+      const oxygenValue = Number.isFinite(sock.oxygen) ? sock.oxygen + '%' : Number.isFinite(sock.oxygenAverage) ? sock.oxygenAverage + '%' : '--';
+      setFittedText(els.sockHeart, Number.isFinite(sock.heart) ? sock.heart + ' bpm' : '--', 80);
+      setFittedText(els.sockOxygen, oxygenValue, 54);
+      setFittedText(els.sockBattery, Number.isFinite(sock.battery) ? sock.battery + '%' : '--', 58);
       setText(els.sockSignal, Number.isFinite(sock.signal) ? sock.signal + ' dBm' : '');
       if (els.sockFill) {
         els.sockFill.setAttribute('fill', sock.alert || sock.disconnected ? '#3b111d' : sock.charging ? '#1f2937' : '#0a1620');
@@ -1380,76 +1660,61 @@ function clientHtml() {
       }
     }
 
-    async function action(name) {
+    async function action(name, options = {}) {
+      if (name === 'assist' && appState.latest?.balance && !appState.latest.balance.canRun) {
+        const balance = appState.latest.balance;
+        showModal('Balance Rooms', balance.reason + ' ' + balance.detail + '.');
+        return;
+      }
+
       els.connection.textContent = 'sending';
+      setPending(name, true);
       try {
-        await fetch('/action', {
+        const response = await fetch('/action', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ name })
+          body: JSON.stringify({ name, ...options })
         });
+        if (!response.ok) throw new Error('Action failed');
         await refresh();
       } catch (error) {
         els.connection.textContent = 'action failed';
-      }
-    }
-
-    function openAssist() {
-      els.assistPanel.classList.add('open');
-      els.assistPanel.setAttribute('aria-hidden', 'false');
-      els.assistAnswer.textContent = '';
-      setTimeout(() => els.assistInput.focus(), 80);
-    }
-
-    function closeAssist() {
-      els.assistPanel.classList.remove('open');
-      els.assistPanel.setAttribute('aria-hidden', 'true');
-      els.assistInput.blur();
-    }
-
-    async function sendAssist() {
-      const text = els.assistInput.value.trim();
-      if (!text) return;
-      els.assistAnswer.textContent = 'Thinking...';
-      try {
-        const response = await fetch('/assist', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ text })
-        });
-        const data = await response.json();
-        els.assistAnswer.textContent = data.text || data.error || 'Done.';
-        await refresh();
-      } catch (error) {
-        els.assistAnswer.textContent = 'Assist failed.';
+      } finally {
+        setPending(name, false);
       }
     }
 
     document.querySelectorAll('[data-action]').forEach(node => {
       node.addEventListener('pointerup', event => {
-        action(node.dataset.action);
+        action(node.dataset.action, {
+          moveBand: appState.moveBand && (node.dataset.action === 'cooler' || node.dataset.action === 'warmer')
+        });
         event.preventDefault();
       });
     });
 
-    els.assistButton.addEventListener('pointerup', event => {
-      openAssist();
-      event.preventDefault();
+    document.querySelectorAll('[data-toggle="moveBand"]').forEach(node => {
+      node.addEventListener('pointerup', event => {
+        setMoveBand(!appState.moveBand);
+        event.preventDefault();
+      });
     });
+
+    els.infoModalClose.addEventListener('click', hideModal);
+    els.infoModal.addEventListener('pointerup', event => {
+      if (event.target === els.infoModal) hideModal();
+    });
+
     els.camerasButton.addEventListener('pointerup', event => {
       window.location.href = '/cameras';
       event.preventDefault();
     });
-    els.assistSend.addEventListener('click', sendAssist);
-    els.assistClose.addEventListener('click', closeAssist);
-    els.assistInput.addEventListener('keydown', event => {
-      if (event.key === 'Enter') sendAssist();
-      if (event.key === 'Escape') closeAssist();
-    });
 
+    setMoveBand(appState.moveBand);
     refresh();
     setInterval(refresh, 1000);
   </script>
+${frameoDeviceBootstrapScript()}
 </body>
 </html>`;
 }
@@ -1464,6 +1729,23 @@ function escapeHtml(value) {
 
 function jsValue(value) {
   return JSON.stringify(value).replace(/</g, '\\u003c');
+}
+
+function frameoDeviceBootstrapScript() {
+  return `<script>
+    // Fully Kiosk exposes runCommand to the Android shell. On the Frameo this
+    // keeps SimpleSSHD alive and flips the USB OTG PHY into host mode so the USB
+    // microphone enumerates after boot or reconnect.
+    (function bootstrapFrameoDevice() {
+      if (typeof fully === 'undefined' || typeof fully.runCommand !== 'function') return;
+      try {
+        fully.runCommand('am broadcast -a org.galexander.sshd.START -n org.galexander.sshd/.StartReceiver');
+      } catch (error) {}
+      try {
+        fully.runCommand("/system/xbin/su 0 sh -c 'echo host > /sys/devices/platform/ff2c0000.syscon/ff2c0000.syscon:usb2-phy@100/otg_mode'");
+      } catch (error) {}
+    })();
+  </script>`;
 }
 
 function cameraDashboardHtml() {
@@ -1563,6 +1845,10 @@ function cameraDashboardHtml() {
     <rect width="1280" height="800" fill="url(#bg)"/>
     <text x="24" y="44" fill="#fff" font-size="30" font-weight="900">Cameras</text>
     <text id="cameraStatus" x="24" y="70" class="small">Static HA snapshots</text>
+    <g class="button" id="micTestButton" transform="translate(944 20)">
+      <rect width="144" height="52" rx="8" fill="#0f766e"/>
+      <text x="72" y="34" text-anchor="middle" fill="#fff" font-size="18" font-weight="850">Mic Test</text>
+    </g>
     <g class="button" id="backButton" transform="translate(1112 20)">
       <rect width="144" height="52" rx="8" fill="#334155"/>
       <text x="72" y="34" text-anchor="middle" fill="#fff" font-size="18" font-weight="850">Climate</text>
@@ -1643,9 +1929,15 @@ function cameraDashboardHtml() {
       event.preventDefault();
     });
 
+    document.getElementById('micTestButton').addEventListener('pointerup', event => {
+      window.location.href = '/mic-test';
+      event.preventDefault();
+    });
+
     refreshState();
     setInterval(refreshState, 5000);
   </script>
+${frameoDeviceBootstrapScript()}
 </body>
 </html>`;
 }
@@ -1655,7 +1947,6 @@ function liveHtml(slug) {
   if (!camera) return null;
   const token = String(attr(camera.liveEntity, 'access_token', ''));
   const snapshotUrl = `/camera/${camera.slug}/snapshot.jpg`;
-  const streamPath = camera.streamPath || CONFIG.cameraPanel?.streamPath || '/api/blink_liveview_proxy/cameras/{slug}/mpegts';
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -1806,7 +2097,7 @@ function liveHtml(slug) {
       bottom: 16px;
       z-index: 6;
       display: grid;
-      grid-template-columns: repeat(5, minmax(0, 1fr));
+      grid-template-columns: repeat(6, minmax(0, 1fr));
       gap: 10px;
       pointer-events: auto;
     }
@@ -1825,8 +2116,54 @@ function liveHtml(slug) {
     button.save {
       background: rgba(79,70,229,0.94);
     }
+    button.audio {
+      background: rgba(22,163,74,0.94);
+    }
+    button.audio.off {
+      background: rgba(71,85,105,0.92);
+    }
     button.talk {
       background: rgba(15,118,110,0.94);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+    }
+    button.talk.pending {
+      background: rgba(161,98,7,0.94);
+    }
+    button.talk.active {
+      background: rgba(22,163,74,0.94);
+    }
+    .talk-ring {
+      display: none;
+      width: 18px;
+      height: 18px;
+      border-radius: 999px;
+      border: 3px solid rgba(255,255,255,0.38);
+      border-top-color: rgba(255,255,255,0.95);
+      animation: talkSpin 0.75s linear infinite;
+      flex: 0 0 auto;
+    }
+    .talk.pending .talk-ring {
+      display: inline-block;
+    }
+    .talk-copy {
+      display: grid;
+      gap: 1px;
+      line-height: 1.04;
+    }
+    .talk-main {
+      font-size: 16px;
+      font-weight: 900;
+    }
+    .talk-sub {
+      font-size: 11px;
+      font-weight: 800;
+      opacity: 0.82;
+    }
+    @keyframes talkSpin {
+      to { transform: rotate(360deg); }
     }
     button:disabled {
       opacity: 0.62;
@@ -1857,7 +2194,7 @@ function liveHtml(slug) {
   <main id="stage" class="stage">
     <img class="backdrop-fill" src="${escapeHtml(snapshotUrl)}" width="1280" height="800" alt="">
     <img class="snapshot" src="${escapeHtml(snapshotUrl)}" width="1280" height="800" alt="">
-    <video id="video" muted playsinline autoplay></video>
+    <video id="video" playsinline autoplay></video>
     <div class="shade"></div>
     <div class="caption">${escapeHtml(camera.label)} Live</div>
     <section id="overlay" class="overlay">
@@ -1872,10 +2209,14 @@ function liveHtml(slug) {
       <button id="restart" class="primary" type="button" ${token ? '' : 'disabled'}>Restart</button>
       <button id="snapshot" type="button">Snapshot</button>
       <button id="clips" class="save" type="button">Clips</button>
-      <button id="talk" class="talk" type="button" disabled>Talk</button>
+      <button id="audio" class="audio" type="button">Audio On</button>
+      <button id="talk" class="talk" type="button" disabled>
+        <span class="talk-ring" aria-hidden="true"></span>
+        <span class="talk-copy"><span class="talk-main">Talk On</span></span>
+      </button>
     </nav>
   </main>
-  <script src="/local/blink-liveview-proxy/mpegts.min.js"></script>
+  <script src="/api/blink_liveview_proxy/static/mpegts.min.js?v=20260524-1539"></script>
   <script>
     if (window.mpegts && mpegts.LoggingControl) {
       mpegts.LoggingControl.applyConfig({
@@ -1890,7 +2231,8 @@ function liveHtml(slug) {
 
     const slug = ${jsValue(camera.slug)};
     const accessToken = ${jsValue(token)};
-    const streamPathTemplate = ${jsValue(streamPath)};
+    const pttOrigin = ${jsValue(haSecureBrowserUrl())};
+    const pttSupported = ${camera.pttSupported === false ? 'false' : 'true'};
     const streamSeconds = 60;
     const video = document.getElementById('video');
     const overlay = document.getElementById('overlay');
@@ -1901,6 +2243,7 @@ function liveHtml(slug) {
     const snapshot = document.getElementById('snapshot');
     const back = document.getElementById('back');
     const clips = document.getElementById('clips');
+    const audio = document.getElementById('audio');
     const talk = document.getElementById('talk');
     const sessionId = window.crypto && crypto.randomUUID
       ? crypto.randomUUID()
@@ -1908,16 +2251,229 @@ function liveHtml(slug) {
     let player = null;
     let endTimer = null;
     let hasVisibleFrame = false;
+    let audioOn = true;
+    let talkWs = null;
+    let talkStream = null;
+    let talkContext = null;
+    let talkSource = null;
+    let talkProcessor = null;
+    let talkMute = null;
+    let talkActive = false;
+    let talkStarting = false;
+    let talkRecoveryTimer = null;
+
+    function syncAudioButton() {
+      video.muted = !audioOn;
+      video.volume = audioOn ? 1 : 0;
+      audio.textContent = audioOn ? 'Audio On' : 'Audio Off';
+      audio.classList.toggle('off', !audioOn);
+    }
 
     function streamUrl() {
       const token = encodeURIComponent(accessToken || '');
       const session = encodeURIComponent(sessionId);
-      const path = streamPathTemplate.replaceAll('{slug}', encodeURIComponent(slug));
-      return path +
-        '?token=' + token +
+      return '/api/blink_liveview_proxy/cameras/' + encodeURIComponent(slug) +
+        '/mpegts?token=' + token +
         '&seconds=' + streamSeconds +
         '&force=1&session=' + session +
         '&cache=' + Date.now();
+    }
+
+    function pttUrl() {
+      const token = encodeURIComponent(accessToken || '');
+      const session = encodeURIComponent(sessionId);
+      const path = '/api/blink_liveview_proxy/cameras/' + encodeURIComponent(slug) +
+        '/ptt?token=' + token + '&session=' + session;
+      const url = new URL(path, pttOrigin || window.location.origin);
+      url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+      return url.href;
+    }
+
+    function pcm16Buffer(floatData) {
+      const pcm = new Int16Array(floatData.length);
+      for (let index = 0; index < floatData.length; index += 1) {
+        const sample = Math.max(-1, Math.min(1, floatData[index]));
+        pcm[index] = sample < 0 ? sample * 0x8000 : sample * 0x7fff;
+      }
+      return pcm.buffer;
+    }
+
+    function escapeButtonText(value) {
+      return String(value || '').replace(/[&<>"]/g, character => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;'
+      }[character]));
+    }
+
+    function setTalkButton(state, label, subLabel = '') {
+      talk.classList.toggle('pending', state === 'pending');
+      talk.classList.toggle('active', state === 'listening');
+      talk.innerHTML = '<span class="talk-ring" aria-hidden="true"></span>' +
+        '<span class="talk-copy"><span class="talk-main">' + escapeButtonText(label) + '</span>' +
+        (subLabel ? '<span class="talk-sub">' + escapeButtonText(subLabel) + '</span>' : '') +
+        '</span>';
+    }
+
+    function handleTalkStatus(data) {
+      if (!data || typeof data !== 'object') return;
+      if (data.type === 'started') {
+        if (talkActive) setTalkButton('pending', 'Warming up');
+      } else if (data.type === 'listening') {
+        if (talkActive) setTalkButton('listening', 'Listening', 'press to stop');
+      } else if (data.type === 'stopped') {
+        if (!talkActive) setTalkButton('idle', 'Talk On');
+      } else if (data.type === 'error' && data.message) {
+        statusText.textContent = data.message;
+        setTalkButton('idle', 'Talk On');
+      }
+    }
+
+    function connectTalkSocket() {
+      return new Promise((resolve, reject) => {
+        const socket = new WebSocket(pttUrl());
+        socket.binaryType = 'arraybuffer';
+        const timeout = setTimeout(() => {
+          socket.close();
+          reject(new Error('Push-to-talk connection timed out'));
+        }, 5000);
+        socket.addEventListener('open', () => {
+          clearTimeout(timeout);
+          resolve(socket);
+        }, { once: true });
+        socket.addEventListener('error', () => {
+          clearTimeout(timeout);
+          reject(new Error('Push-to-talk connection failed'));
+        }, { once: true });
+        socket.addEventListener('message', event => {
+          try {
+            handleTalkStatus(JSON.parse(event.data));
+          } catch (error) {}
+        });
+      });
+    }
+
+    async function startTalk(event) {
+      if (event) event.preventDefault();
+      if (!pttSupported || talkActive || talkStarting || !video.classList.contains('ready')) return;
+
+      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+      if (!window.isSecureContext) {
+        statusText.textContent = 'Talk needs HTTPS or a trusted browser origin.';
+        overlay.classList.remove('hidden');
+        return;
+      }
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !AudioContextClass) {
+        statusText.textContent = 'Microphone is not available in this browser.';
+        overlay.classList.remove('hidden');
+        return;
+      }
+
+      talkStarting = true;
+      talkActive = true;
+      setTalkButton('pending', 'Connecting');
+      let talkStep = 'microphone permission';
+
+      try {
+        talkStream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            channelCount: 1,
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true
+          },
+          video: false
+        });
+        talkStep = 'audio context';
+        talkContext = new AudioContextClass();
+        await talkContext.resume();
+        talkStep = 'talk bridge';
+        talkWs = await connectTalkSocket();
+        talkWs.send(JSON.stringify({
+          type: 'start',
+          sampleRate: Math.round(talkContext.sampleRate)
+        }));
+
+        talkStep = 'audio graph';
+        talkSource = talkContext.createMediaStreamSource(talkStream);
+        talkProcessor = talkContext.createScriptProcessor(4096, 1, 1);
+        talkMute = talkContext.createGain();
+        talkMute.gain.value = 0;
+        talkProcessor.onaudioprocess = audioEvent => {
+          if (!talkWs || talkWs.readyState !== WebSocket.OPEN || !talkActive) return;
+          if (talkWs.bufferedAmount > 256 * 1024) return;
+          talkWs.send(pcm16Buffer(audioEvent.inputBuffer.getChannelData(0)));
+        };
+        talkSource.connect(talkProcessor);
+        talkProcessor.connect(talkMute);
+        talkMute.connect(talkContext.destination);
+        talkStarting = false;
+      } catch (error) {
+        talkStarting = false;
+        const detail = error && (error.name || error.message) ? ' (' + (error.name || error.message) + ')' : '';
+        statusText.textContent = 'Could not start ' + talkStep + detail + '.';
+        overlay.classList.remove('hidden');
+        await stopTalk();
+      }
+    }
+
+    function scheduleTalkPlaybackRecovery() {
+      if (talkRecoveryTimer) clearTimeout(talkRecoveryTimer);
+      const startTime = video.currentTime || 0;
+      talkRecoveryTimer = setTimeout(() => {
+        talkRecoveryTimer = null;
+        if (!player || !video.classList.contains('ready')) return;
+        const laterTime = video.currentTime || 0;
+        if (video.paused) {
+          video.play().catch(() => {});
+          return;
+        }
+        if (Math.abs(laterTime - startTime) < 0.05) {
+          statusText.textContent = 'Recovering live view after talk';
+          startPlayer();
+        }
+      }, 1800);
+    }
+
+    async function stopTalk(event, options = {}) {
+      if (event) event.preventDefault();
+      const wasActive = talkActive;
+      talkStarting = false;
+      talkActive = false;
+      setTalkButton('idle', 'Talk On');
+
+      if (talkProcessor) {
+        talkProcessor.onaudioprocess = null;
+        try { talkProcessor.disconnect(); } catch (error) {}
+        talkProcessor = null;
+      }
+      if (talkSource) {
+        try { talkSource.disconnect(); } catch (error) {}
+        talkSource = null;
+      }
+      if (talkMute) {
+        try { talkMute.disconnect(); } catch (error) {}
+        talkMute = null;
+      }
+      if (talkStream) {
+        for (const track of talkStream.getTracks()) track.stop();
+        talkStream = null;
+      }
+      if (talkWs) {
+        if (talkWs.readyState === WebSocket.OPEN && wasActive) {
+          try { talkWs.send(JSON.stringify({ type: 'stop' })); } catch (error) {}
+        }
+        talkWs.close();
+        talkWs = null;
+      }
+      if (talkContext) {
+        try { await talkContext.close(); } catch (error) {}
+        talkContext = null;
+      }
+      if (wasActive && options.recover !== false) {
+        scheduleTalkPlaybackRecovery();
+      }
     }
 
     function setLoading(message) {
@@ -1943,10 +2499,16 @@ function liveHtml(slug) {
       hasVisibleFrame = true;
       video.classList.add('ready');
       overlay.classList.add('hidden');
-      talk.disabled = true;
+      talk.disabled = !pttSupported;
+      setTalkButton('idle', 'Talk On');
     }
 
     function stopPlayer() {
+      stopTalk(null, { recover: false });
+      if (talkRecoveryTimer) {
+        clearTimeout(talkRecoveryTimer);
+        talkRecoveryTimer = null;
+      }
       if (endTimer) {
         clearTimeout(endTimer);
         endTimer = null;
@@ -1977,8 +2539,16 @@ function liveHtml(slug) {
       }
       setLoading('Waking camera and waiting for video');
 
-      if (!window.mpegts || !mpegts.getFeatureList().mseLivePlayback) {
-        setEnded('This browser cannot play the direct MPEG-TS stream.');
+      if (!window.mpegts) {
+        setEnded('Live player library did not load. E-WP-001');
+        return;
+      }
+
+      const features = mpegts.getFeatureList();
+      if (!features.mseLivePlayback) {
+        setEnded('This browser cannot play the direct MPEG-TS stream. E-WP-002 MSE: ' +
+          (features.msePlayback ? 'yes' : 'no') + ', stream: ' +
+          (features.networkStreamIO ? 'yes' : 'no') + '.');
         return;
       }
 
@@ -2019,11 +2589,12 @@ function liveHtml(slug) {
 
       player.attachMediaElement(video);
       player.load();
+      syncAudioButton();
 
       try {
         await video.play();
       } catch (error) {
-        statusText.textContent = 'Tap Restart to start live view';
+        statusText.textContent = 'Tap Restart to start live view. Browser may require a tap for audio.';
       }
 
       endTimer = setTimeout(() => {
@@ -2059,17 +2630,457 @@ function liveHtml(slug) {
       window.location.href = '/clips/' + encodeURIComponent(slug);
     });
 
-    talk.addEventListener('pointerup', event => {
+    audio.addEventListener('pointerup', async event => {
       event.preventDefault();
-      statusText.textContent = window.isSecureContext
-        ? 'Microphone bridge is not enabled on this proxy yet.'
-        : 'Talk needs HTTPS or a trusted browser origin.';
-      overlay.classList.remove('hidden');
+      audioOn = !audioOn;
+      syncAudioButton();
+      try {
+        await video.play();
+      } catch (error) {}
     });
 
+    talk.addEventListener('pointerup', event => {
+      event.preventDefault();
+      if (talkActive || talkStarting) {
+        stopTalk();
+      } else {
+        startTalk();
+      }
+    });
+    window.addEventListener('blur', stopTalk);
+
     window.addEventListener('beforeunload', stopPlayer);
+    syncAudioButton();
     startPlayer();
   </script>
+${frameoDeviceBootstrapScript()}
+</body>
+</html>`;
+}
+
+function micTestHtml() {
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+  <title>Wallpanel Mic Test</title>
+  <style>
+    html, body {
+      margin: 0;
+      min-height: 100%;
+      background: #071017;
+      color: #f8fafc;
+      font-family: Inter, Roboto, Arial, sans-serif;
+    }
+    main {
+      width: min(720px, calc(100vw - 32px));
+      margin: 0 auto;
+      padding: 28px 16px;
+      display: grid;
+      gap: 16px;
+    }
+    h1 {
+      margin: 0;
+      font-size: 30px;
+      letter-spacing: 0;
+    }
+    .row {
+      display: grid;
+      gap: 6px;
+      padding: 14px;
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 8px;
+      background: #0f1d29;
+    }
+    .label {
+      color: rgba(248,250,252,0.66);
+      font-size: 13px;
+      font-weight: 800;
+      text-transform: uppercase;
+    }
+    .value {
+      overflow-wrap: anywhere;
+      font-size: 17px;
+      font-weight: 800;
+    }
+    button {
+      min-height: 46px;
+      border: 0;
+      border-radius: 8px;
+      background: #0284c7;
+      color: #fff;
+      font-size: 15px;
+      font-weight: 900;
+      padding: 0 16px;
+    }
+    button.back {
+      background: rgba(255,255,255,0.08);
+    }
+    .button-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+    .button-row button {
+      flex: 0 1 auto;
+    }
+    #start {
+      background: #16a34a;
+    }
+    #stop {
+      background: #475569;
+    }
+    select {
+      width: 100%;
+      min-height: 48px;
+      border: 1px solid rgba(255,255,255,0.15);
+      border-radius: 8px;
+      background: #0f1d29;
+      color: #f8fafc;
+      font-size: 16px;
+      font-weight: 700;
+      padding: 0 12px;
+    }
+    .meter-shell {
+      display: grid;
+      gap: 8px;
+      padding: 14px;
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 8px;
+      background: #0f1d29;
+    }
+    .meter-label {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      color: rgba(248,250,252,0.72);
+      font-size: 13px;
+      font-weight: 850;
+      text-transform: uppercase;
+    }
+    .meter {
+      position: relative;
+      height: 34px;
+      border-radius: 8px;
+      overflow: hidden;
+      border: 1px solid rgba(255,255,255,0.14);
+      background:
+        repeating-linear-gradient(90deg, rgba(255,255,255,0.16) 0 1px, transparent 1px 10%),
+        linear-gradient(90deg, rgba(34,197,94,0.16), rgba(234,179,8,0.16) 62%, rgba(239,68,68,0.18));
+    }
+    #bar {
+      width: 0%;
+      height: 100%;
+      background: linear-gradient(90deg, #22c55e, #eab308 68%, #ef4444);
+      transition: width 0.08s linear;
+    }
+    pre {
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      margin: 0;
+      font: 13px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      color: rgba(248,250,252,0.78);
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <button class="back" type="button" onclick="history.length > 1 ? history.back() : (window.location.href = '/')">&#8592; Back</button>
+    <h1>Wallpanel Mic Test</h1>
+    <div class="row"><div class="label">Secure context</div><div id="secure" class="value"></div></div>
+    <div class="row"><div class="label">Media APIs</div><div id="apis" class="value"></div></div>
+    <div class="row"><div class="label">Status</div><div id="status" class="value">Ready</div></div>
+    <div class="row"><div class="label">Microphone</div><select id="micSelect"><option value="">Browser default (Android default input)</option></select></div>
+    <div class="row"><div class="label">Active input</div><pre id="activeInput">None yet</pre></div>
+    <div class="row"><div class="label">OS audio devices</div><pre id="osDevices">Not checked yet</pre></div>
+    <div class="button-row">
+      <button id="readOsDevices" type="button">Read OS Devices</button>
+      <button id="unlockLabels" type="button">Unlock Names</button>
+      <button id="refreshDevices" type="button">Refresh</button>
+    </div>
+    <div class="button-row">
+      <button id="start" type="button">Start Mic Test</button>
+      <button id="stop" type="button">Stop</button>
+    </div>
+    <div class="meter-shell">
+      <div class="meter-label"><span>Input level</span><span id="meterValue">0%</span></div>
+      <div class="meter"><div id="bar"></div></div>
+    </div>
+  </main>
+  <script>
+    const secure = document.getElementById('secure');
+    const apis = document.getElementById('apis');
+    const statusText = document.getElementById('status');
+    const activeInput = document.getElementById('activeInput');
+    const osDevices = document.getElementById('osDevices');
+    const micSelect = document.getElementById('micSelect');
+    const bar = document.getElementById('bar');
+    const meterValue = document.getElementById('meterValue');
+    let stream = null;
+    let context = null;
+    let analyser = null;
+    let raf = null;
+    let lastLevel = 0;
+    let osInputNames = [];
+
+    function setStatus(text) {
+      statusText.textContent = text;
+    }
+
+    function apiSummary() {
+      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+      return [
+        'mediaDevices: ' + Boolean(navigator.mediaDevices),
+        'getUserMedia: ' + Boolean(navigator.mediaDevices && navigator.mediaDevices.getUserMedia),
+        'AudioContext: ' + Boolean(AudioContextClass)
+      ].join(' | ');
+    }
+
+    function shortId(value) {
+      if (!value) return '(empty)';
+      if (value === 'default' || value === 'communications') return value;
+      return value.length > 18 ? value.slice(0, 8) + '...' + value.slice(-6) : value;
+    }
+
+    function deviceName(device, index) {
+      if (device.label) return device.label;
+      if (device.deviceId === 'default') return 'Browser default input';
+      if (device.deviceId === 'communications') return 'Browser communications input';
+      return osInputNames[index] || ('Browser input ' + (index + 1));
+    }
+
+    function shellQuote(value) {
+      return "'" + String(value).replace(/'/g, "'\\\\''") + "'";
+    }
+
+    function fullyScratchPath(filename) {
+      try {
+        if (typeof fully !== 'undefined' && typeof fully.getInternalAppSpecificStoragePath === 'function') {
+          const base = fully.getInternalAppSpecificStoragePath();
+          if (base) return base.replace(/\\/+$/, '') + '/' + filename;
+        }
+      } catch (error) {}
+      return '/sdcard/Download/' + filename;
+    }
+
+    function parseOsInputNames(cardsText) {
+      const lines = String(cardsText || '').split('\\n');
+      const names = [];
+      for (let index = 0; index < lines.length; index++) {
+        const match = lines[index].match(/^\\s*(\\d+)\\s+\\[([^\\]]+)\\]:\\s*([^\\n]+)$/);
+        if (!match) continue;
+        const card = match[1];
+        const shortName = match[2].trim();
+        const typeAndName = match[3].trim().replace(/\\s+-\\s+/, ' - ');
+        const detail = (lines[index + 1] || '').trim();
+        const friendly = detail || typeAndName || shortName;
+        names.push('OS card ' + card + ': ' + friendly);
+      }
+      return names;
+    }
+
+    async function readOsAudioDevices() {
+      if (typeof fully === 'undefined' || typeof fully.runSuCommand !== 'function' || typeof fully.readFile !== 'function') {
+        osDevices.textContent = 'Fully runSuCommand/readFile bridge is unavailable in this browser.';
+        return;
+      }
+      const cardsPath = fullyScratchPath('frameo-asound-cards.txt');
+      const devicesPath = fullyScratchPath('frameo-asound-devices.txt');
+      const command = [
+        'cat /proc/asound/cards > ' + shellQuote(cardsPath) + ' 2>&1',
+        'cat /proc/asound/devices > ' + shellQuote(devicesPath) + ' 2>&1'
+      ].join('; ');
+      try {
+        osDevices.textContent = 'Reading Android audio devices...';
+        fully.runSuCommand('sh -c ' + shellQuote(command));
+        await new Promise(resolve => setTimeout(resolve, 900));
+        const cards = fully.readFile(cardsPath) || '';
+        const devices = fully.readFile(devicesPath) || '';
+        osInputNames = parseOsInputNames(cards);
+        osDevices.textContent = [
+          '/proc/asound/cards',
+          cards.trim() || '(empty)',
+          '',
+          '/proc/asound/devices',
+          devices.trim() || '(empty)'
+        ].join('\\n');
+        await listDevices();
+      } catch (error) {
+        osDevices.textContent = 'OS audio poll failed: ' + (error.message || String(error));
+      }
+    }
+
+    async function listDevices() {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
+        setStatus('enumerateDevices unavailable');
+        return;
+      }
+      try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+
+        const inputs = devices.filter(device => device.kind === 'audioinput');
+        const previousId = micSelect.value;
+        while (micSelect.options.length > 1) micSelect.remove(1);
+        let physicalIndex = 0;
+        inputs.forEach((input, index) => {
+          const option = document.createElement('option');
+          const alias = input.deviceId === 'default' || input.deviceId === 'communications';
+          option.value = input.deviceId;
+          option.textContent = deviceName(input, alias ? index : physicalIndex) + ' [' + shortId(input.deviceId) + ']';
+          micSelect.appendChild(option);
+          if (!alias) physicalIndex += 1;
+        });
+        if ([...micSelect.options].some(option => option.value === previousId)) {
+          micSelect.value = previousId;
+        }
+      } catch (error) {
+        setStatus('Device refresh failed: ' + (error.name || 'Error') + (error.message ? ' - ' + error.message : ''));
+      }
+    }
+
+    async function unlockLabels() {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        setStatus('Required microphone APIs are unavailable.');
+        return;
+      }
+      let probe = null;
+      try {
+        setStatus('Opening mic briefly so the browser can expose device names');
+        probe = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+        await listDevices();
+        const labelsVisible = [...micSelect.options].some(option => option.value && !option.textContent.includes('name not exposed'));
+        setStatus(labelsVisible
+          ? 'Device names refreshed'
+          : 'Mic permission works, but this browser is still hiding device names');
+      } catch (error) {
+        setStatus('Could not unlock device names: ' + (error.name || 'Error') + (error.message ? ' - ' + error.message : ''));
+      } finally {
+        if (probe) {
+          for (const track of probe.getTracks()) track.stop();
+        }
+      }
+    }
+
+    function tick() {
+      if (!analyser) return;
+      const data = new Uint8Array(analyser.fftSize);
+      analyser.getByteTimeDomainData(data);
+      let peak = 0;
+      for (const value of data) {
+        peak = Math.max(peak, Math.abs(value - 128));
+      }
+      lastLevel = Math.min(100, Math.round((peak / 128) * 100));
+      bar.style.width = lastLevel + '%';
+      meterValue.textContent = lastLevel + '%';
+      raf = requestAnimationFrame(tick);
+    }
+
+    async function start(options = {}) {
+      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+      if (!window.isSecureContext) {
+        setStatus('Not a secure context. Open this page over trusted HTTPS.');
+        return;
+      }
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !AudioContextClass) {
+        setStatus('Required microphone APIs are unavailable.');
+        return;
+      }
+      try {
+        if (stream || context || analyser) await stop({ quiet: true });
+        setStatus('Opening selected microphone');
+        const audio = {
+          channelCount: 1,
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        };
+        if (micSelect.value) audio.deviceId = { exact: micSelect.value };
+        stream = await navigator.mediaDevices.getUserMedia({ audio, video: false });
+        await listDevices();
+        const [track] = stream.getAudioTracks();
+        const settings = track && track.getSettings ? track.getSettings() : {};
+        activeInput.textContent = [
+          'track label: ' + ((track && track.label) || '(no label)'),
+          'settings deviceId: ' + shortId(settings.deviceId),
+          'sampleRate: ' + (settings.sampleRate || '(unknown)'),
+          'channelCount: ' + (settings.channelCount || '(unknown)')
+        ].join('\\n');
+        setStatus('Microphone active. Speak and watch the meter.');
+        context = new AudioContextClass();
+        await context.resume();
+        const source = context.createMediaStreamSource(stream);
+        analyser = context.createAnalyser();
+        analyser.fftSize = 512;
+        source.connect(analyser);
+        tick();
+        if (options.autoReport) {
+          const testLabel = micSelect.options[micSelect.selectedIndex]?.textContent || 'selected input';
+          setTimeout(() => {
+            setStatus(testLabel + ' level: ' + lastLevel + '%');
+          }, 1500);
+        }
+      } catch (error) {
+        setStatus('Mic failed: ' + (error.name || 'Error') + (error.message ? ' - ' + error.message : ''));
+      }
+    }
+
+    async function stop(options = {}) {
+      if (raf) cancelAnimationFrame(raf);
+      raf = null;
+      analyser = null;
+      if (stream) {
+        for (const track of stream.getTracks()) track.stop();
+        stream = null;
+      }
+      if (context) {
+        try { await context.close(); } catch (error) {}
+        context = null;
+      }
+      bar.style.width = '0%';
+      meterValue.textContent = '0%';
+      activeInput.textContent = 'None yet';
+      if (!options.quiet) setStatus('Stopped');
+      await listDevices();
+    }
+
+    async function testSelectedInput() {
+      await start({ autoReport: true });
+    }
+
+    secure.textContent = window.isSecureContext ? 'yes' : 'no';
+    apis.textContent = apiSummary();
+    listDevices();
+    readOsAudioDevices();
+    document.getElementById('refreshDevices').addEventListener('click', listDevices);
+    document.getElementById('readOsDevices').addEventListener('click', readOsAudioDevices);
+    document.getElementById('unlockLabels').addEventListener('click', unlockLabels);
+    document.getElementById('start').addEventListener('click', testSelectedInput);
+    document.getElementById('stop').addEventListener('click', stop);
+    window.addEventListener('beforeunload', stop);
+  </script>
+${frameoDeviceBootstrapScript()}
+</body>
+</html>`;
+}
+
+function plainTestHtml() {
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Panel Plain Test</title>
+</head>
+<body style="margin:0;background:#102030;color:white;font:24px Arial;padding:28px">
+  <h1 style="margin-top:0">Panel Plain Test</h1>
+  <p>If you can read this in Fully Kiosk over HTTPS, TLS and basic rendering work.</p>
+  <p><a style="color:#7dd3fc" href="/cameras">Open cameras</a></p>
+  <p id="js">JavaScript not checked yet.</p>
+  <script>
+    document.getElementById('js').textContent = 'JavaScript works. Secure context: ' + window.isSecureContext;
+  </script>
+${frameoDeviceBootstrapScript()}
 </body>
 </html>`;
 }
@@ -2203,6 +3214,7 @@ function clipsHtml(slug) {
     }
     loadClips();
   </script>
+${frameoDeviceBootstrapScript()}
 </body>
 </html>`;
 }
@@ -2227,20 +3239,36 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (req.method === 'GET' && url.pathname === '/mic-test') {
+      send(res, 200, {
+        'content-type': 'text/html; charset=utf-8',
+        'cache-control': 'no-store'
+      }, micTestHtml());
+      return;
+    }
+
+    if (req.method === 'GET' && url.pathname === '/plain-test') {
+      send(res, 200, {
+        'content-type': 'text/html; charset=utf-8',
+        'cache-control': 'no-store'
+      }, plainTestHtml());
+      return;
+    }
+
     if (req.method === 'GET' && url.pathname === '/cameras/state') {
       await pollStates();
       sendJson(res, 200, camerasState());
       return;
     }
 
-    const proxyPrefixes = CONFIG.cameraPanel?.proxyPrefixes || [
-      '/api/blink_liveview_proxy/',
-      '/api/camera_proxy/',
-      '/local/blink-liveview-proxy/'
-    ];
-    if (req.method === 'GET' && proxyPrefixes.some(prefix => url.pathname.startsWith(prefix))) {
-      await proxyHaResponse(req, res, `${url.pathname}${url.search}`, {
-        cacheControl: url.pathname.startsWith('/local/') ? 'public, max-age=3600' : 'no-store'
+    if (req.method === 'GET' && (
+      url.pathname.startsWith('/api/blink_liveview_proxy/') ||
+      url.pathname.startsWith('/api/camera_proxy/') ||
+      url.pathname.startsWith('/local/blink-liveview-proxy/')
+    )) {
+      const proxyPath = blinkStaticAliasPath(url.pathname);
+      await proxyHaResponse(req, res, `${proxyPath}${url.search}`, {
+        cacheControl: proxyPath.startsWith('/api/blink_liveview_proxy/static/') ? 'public, max-age=3600' : 'no-store'
       });
       return;
     }
@@ -2345,17 +3373,9 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === 'POST' && url.pathname === '/action') {
       const payload = await readJson(req);
-      await callAction(String(payload.name || ''));
+      await callAction(String(payload.name || ''), payload);
       await pollStates(true).catch(() => {});
       sendJson(res, 200, { ok: true });
-      return;
-    }
-
-    if (req.method === 'POST' && url.pathname === '/assist') {
-      const payload = await readJson(req);
-      const result = await processAssist(payload.text);
-      await pollStates(true).catch(() => {});
-      sendJson(res, 200, result);
       return;
     }
 
@@ -2377,15 +3397,27 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
+let shuttingDown = false;
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
 
 function shutdown() {
+  if (shuttingDown) return;
+  shuttingDown = true;
   server.close(() => process.exit(0));
+  if (typeof server.closeIdleConnections === 'function') {
+    server.closeIdleConnections();
+  }
+  setTimeout(() => {
+    if (typeof server.closeAllConnections === 'function') {
+      server.closeAllConnections();
+    }
+    process.exit(0);
+  }, 2500).unref();
 }
 
 server.listen(PORT, HOST, () => {
-  console.log(`HA Light Panel listening on http://${HOST}:${PORT}/`);
+  console.log(`Frameo SVG dashboard listening on http://${HOST}:${PORT}/`);
   console.log(`Home Assistant: ${haBaseUrl()}`);
 });
 

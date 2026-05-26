@@ -4,7 +4,7 @@ A tiny Home Assistant panel server for low-power browsers, old tablets, kiosk di
 
 Instead of loading the full Home Assistant frontend, HA Light Panel serves a small SVG/HTML interface and pulls state from the Home Assistant REST API. The browser does very little work, which makes it a good fit for slow Android WebViews and cheap wall panels.
 
-If this saves you a little time, [buy me a coffee](https://paypal.me/ABPaintball/5).
+If this saves you a little time, [buy me a coffee](https://paypal.me/ABPaintball/5). Add `Buy me a coffee` in the PayPal note so I know what it was for.
 
 [![Buy me a coffee](https://img.shields.io/badge/Buy%20me%20a%20coffee-$5%20PayPal-00457C?logo=paypal)](https://paypal.me/ABPaintball/5)
 
@@ -101,6 +101,9 @@ The most important sections are:
 ## Display Setup
 
 For a Frameo or similar Android picture frame, see [docs/frameo-wallpanel.md](docs/frameo-wallpanel.md).
+
+For USB microphone, SSH, OTG host mode, and push-to-talk notes on Frameo-style
+frames, see [docs/frameo-usb-microphone.md](docs/frameo-usb-microphone.md).
 
 Short version:
 
