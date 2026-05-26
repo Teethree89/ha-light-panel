@@ -16,7 +16,7 @@ If this saves you a little time, [buy me a coffee](https://paypal.me/ABPaintball
 - Config-driven entity mapping
 - Temperature, humidity, battery, HVAC mode, comfort band, and status-panel cards
 - Optional camera snapshot grid
-- Optional Blink live-view proxy integration hooks
+- Optional Blink live-view proxy integration hooks (check out this repo for the integration: https://github.com/Teethree89/ha-blink-live-view-proxy)
 - Service-backed action buttons for comfort tweaks and room balancing
 - Docker and systemd deployment examples
 - No runtime npm dependencies
