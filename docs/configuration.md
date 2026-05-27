@@ -203,7 +203,9 @@ For integrations with unreliable numeric battery attributes:
 }
 ```
 
-Live view currently expects a compatible local proxy endpoint, such as the Blink live-view proxy used by the original panel:
+Live view currently expects a compatible local proxy endpoint, such as the Blink
+Liveview Proxy package documented in the
+[main README](https://github.com/Teethree89/ha-light-panel#blink-live-view-proxy):
 
 ```json
 {
