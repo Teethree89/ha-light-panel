@@ -98,6 +98,31 @@ The most important sections are:
 - `panel.statusPanel`: optional side status widget
 - `cameras`: optional camera snapshot/live mappings
 
+## Blink Live View Proxy
+
+HA Light Panel can show Blink snapshots by using normal Home Assistant camera
+entities. For direct live view, push-to-talk, local clip browsing, and manual
+snapshot refresh buttons, it expects the separate Blink Liveview Proxy package:
+
+[../blink-liveview-proxy](../blink-liveview-proxy)
+
+The proxy package contains:
+
+- a Home Assistant custom integration that exposes `camera.blink_live_*`
+  entities and local `/api/blink_liveview_proxy/...` routes
+- a small Python service that logs in to Blink with BlinkPy and bridges the
+  direct Blink live-view stream
+- install, configuration, systemd, and known-limitations docs
+
+In this panel's camera config, set `sourceEntity` to the normal HA Blink camera
+for snapshots, and set `liveEntity` to the matching proxy camera for live view.
+The optional `liveProxyEntity` and `snapshotRefreshPath` settings let the panel
+show proxy health and request fresh Blink snapshots from the proxy integration.
+
+See the camera configuration notes in [docs/configuration.md](docs/configuration.md#cameras),
+and the proxy setup guide in
+[../blink-liveview-proxy/docs/INSTALL.md](../blink-liveview-proxy/docs/INSTALL.md).
+
 ## Display Setup
 
 For a Frameo or similar Android picture frame, see [docs/frameo-fully-kiosk.md](docs/frameo-fully-kiosk.md).
