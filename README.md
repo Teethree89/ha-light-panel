@@ -16,7 +16,7 @@ If this saves you a little time, [buy me a coffee](https://paypal.me/ABPaintball
 - Config-driven entity mapping
 - Temperature, humidity, battery, HVAC mode, comfort band, and status-panel cards
 - Optional camera snapshot grid
-- Optional Blink live-view proxy integration hooks (check out this repo for the integration: https://github.com/Teethree89/ha-blink-live-view-proxy)
+- Optional Blink live-view proxy integration hooks
 - Service-backed action buttons for comfort tweaks and room balancing
 - Docker and systemd deployment examples
 - No runtime npm dependencies
@@ -100,7 +100,7 @@ The most important sections are:
 
 ## Display Setup
 
-For a Frameo or similar Android picture frame, see [docs/frameo-wallpanel.md](docs/frameo-wallpanel.md).
+For a Frameo or similar Android picture frame, see [docs/frameo-fully-kiosk.md](docs/frameo-fully-kiosk.md).
 
 For USB microphone, SSH, OTG host mode, and push-to-talk notes on Frameo-style
 frames, see [docs/frameo-usb-microphone.md](docs/frameo-usb-microphone.md).
@@ -108,7 +108,7 @@ frames, see [docs/frameo-usb-microphone.md](docs/frameo-usb-microphone.md).
 Short version:
 
 - Prefer `http://SERVER_IP:8890/` over `.local` names on Android WebView.
-- Use WallPanel as the full-screen browser.
+- Use Fully Kiosk Browser as the full-screen browser.
 - Use Taskbar or another edge launcher if you want to switch between the photo-frame app and the panel.
 - Use ADB for sideloading and setup when the frame exposes it.
 
