@@ -1,4 +1,5 @@
 const http = require('http');
+const https = require('https');
 const fs = require('fs');
 const path = require('path');
 const { URL } = require('url');
@@ -274,6 +275,78 @@ async function proxyHaResponse(req, res, apiPath, options = {}) {
   } finally {
     if (!res.writableEnded) res.end();
   }
+}
+
+function proxyHaWebSocket(req, socket, head, apiPath) {
+  const token = haToken();
+  if (!token) {
+    socket.write('HTTP/1.1 500 Internal Server Error\r\nConnection: close\r\n\r\nMissing HA token');
+    socket.destroy();
+    return;
+  }
+
+  let target;
+  try {
+    target = new URL(haBaseUrl());
+  } catch (error) {
+    socket.write('HTTP/1.1 500 Internal Server Error\r\nConnection: close\r\n\r\nInvalid HA URL');
+    socket.destroy();
+    return;
+  }
+
+  const transport = target.protocol === 'https:' ? https : http;
+  const upstreamReq = transport.request({
+    protocol: target.protocol,
+    hostname: target.hostname,
+    port: target.port || (target.protocol === 'https:' ? 443 : 80),
+    method: 'GET',
+    path: apiPath,
+    headers: {
+      ...req.headers,
+      host: target.host,
+      authorization: `Bearer ${token}`
+    }
+  });
+
+  upstreamReq.on('upgrade', (upstreamRes, upstreamSocket, upstreamHead) => {
+    socket.write(
+      `HTTP/1.1 ${upstreamRes.statusCode || 101} ${upstreamRes.statusMessage || 'Switching Protocols'}\r\n` +
+      Object.entries(upstreamRes.headers)
+        .map(([name, value]) => Array.isArray(value)
+          ? value.map(item => `${name}: ${item}`).join('\r\n')
+          : `${name}: ${value}`)
+        .join('\r\n') +
+      '\r\n\r\n'
+    );
+    if (upstreamHead?.length) socket.write(upstreamHead);
+    if (head?.length) upstreamSocket.write(head);
+    upstreamSocket.on('error', () => socket.destroy());
+    socket.on('error', () => upstreamSocket.destroy());
+    upstreamSocket.pipe(socket);
+    socket.pipe(upstreamSocket);
+  });
+
+  upstreamReq.on('response', response => {
+    socket.write(
+      `HTTP/1.1 ${response.statusCode || 502} ${response.statusMessage || 'Bad Gateway'}\r\n` +
+      Object.entries(response.headers)
+        .map(([name, value]) => Array.isArray(value)
+          ? value.map(item => `${name}: ${item}`).join('\r\n')
+          : `${name}: ${value}`)
+        .join('\r\n') +
+      '\r\n\r\n'
+    );
+    response.pipe(socket);
+  });
+
+  upstreamReq.on('error', error => {
+    if (!socket.destroyed) {
+      socket.write(`HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n${error.message}`);
+      socket.destroy();
+    }
+  });
+
+  upstreamReq.end();
 }
 
 function blinkStaticAliasPath(pathname) {
@@ -1734,16 +1807,36 @@ function jsValue(value) {
 function frameoDeviceBootstrapScript() {
   return `<script>
     // Fully Kiosk exposes runCommand to the Android shell. On the Frameo this
-    // keeps SimpleSSHD alive and flips the USB OTG PHY into host mode so the USB
-    // microphone enumerates after boot or reconnect.
+    // flips the USB OTG PHY into host mode so the USB microphone enumerates
+    // after boot or reconnect. The tiny ALSA mixer reset keeps the USB mic from
+    // coming back as a silent input after Android audio restarts, and wakes the
+    // tablet speaker path for live camera audio. SimpleSSHD is only started on
+    // the mic-test/debug path so the frame is not left serving SSH just because
+    // the dashboard is open.
     (function bootstrapFrameoDevice() {
       if (typeof fully === 'undefined' || typeof fully.runCommand !== 'function') return;
-      try {
-        fully.runCommand('am broadcast -a org.galexander.sshd.START -n org.galexander.sshd/.StartReceiver');
-      } catch (error) {}
-      try {
-        fully.runCommand("/system/xbin/su 0 sh -c 'echo host > /sys/devices/platform/ff2c0000.syscon/ff2c0000.syscon:usb2-phy@100/otg_mode'");
-      } catch (error) {}
+      const run = command => {
+        try {
+          fully.runCommand(command);
+        } catch (error) {}
+      };
+      const refreshAudio = () => {
+        run("/system/xbin/su 0 sh -c 'echo host > /sys/devices/platform/ff2c0000.syscon/ff2c0000.syscon:usb2-phy@100/otg_mode; tinymix -D 0 0 SPK; tinymix -D 1 1 1; tinymix -D 1 2 16; tinymix -D 1 3 1'");
+      };
+      window.refreshFrameoAudioHardware = refreshAudio;
+      const params = new URLSearchParams(window.location.search);
+      const startSsh = window.location.pathname === '/mic-test'
+        || params.get('ssh') === '1'
+        || localStorage.getItem('frameoSshAutostart') === 'true';
+      if (startSsh) {
+        run('am broadcast -a org.galexander.sshd.START -n org.galexander.sshd/.StartReceiver');
+        if (localStorage.getItem('frameoSshKeepAlive') !== 'true') {
+          setTimeout(() => run('/system/xbin/su 0 am force-stop org.galexander.sshd'), 10 * 60 * 1000);
+        }
+      }
+      refreshAudio();
+      setTimeout(refreshAudio, 1500);
+      setTimeout(refreshAudio, 5000);
     })();
   </script>`;
 }
@@ -2231,7 +2324,6 @@ function liveHtml(slug) {
 
     const slug = ${jsValue(camera.slug)};
     const accessToken = ${jsValue(token)};
-    const pttOrigin = ${jsValue(haSecureBrowserUrl())};
     const pttSupported = ${camera.pttSupported === false ? 'false' : 'true'};
     const streamSeconds = 60;
     const video = document.getElementById('video');
@@ -2262,7 +2354,15 @@ function liveHtml(slug) {
     let talkStarting = false;
     let talkRecoveryTimer = null;
 
+    function refreshFrameoAudioHardware() {
+      if (typeof fully === 'undefined' || typeof fully.runCommand !== 'function') return;
+      try {
+        fully.runCommand("/system/xbin/su 0 sh -c 'echo host > /sys/devices/platform/ff2c0000.syscon/ff2c0000.syscon:usb2-phy@100/otg_mode; tinymix -D 0 0 SPK; tinymix -D 1 1 1; tinymix -D 1 2 16; tinymix -D 1 3 1'");
+      } catch (error) {}
+    }
+
     function syncAudioButton() {
+      refreshFrameoAudioHardware();
       video.muted = !audioOn;
       video.volume = audioOn ? 1 : 0;
       audio.textContent = audioOn ? 'Audio On' : 'Audio Off';
@@ -2284,7 +2384,7 @@ function liveHtml(slug) {
       const session = encodeURIComponent(sessionId);
       const path = '/api/blink_liveview_proxy/cameras/' + encodeURIComponent(slug) +
         '/ptt?token=' + token + '&session=' + session;
-      const url = new URL(path, pttOrigin || window.location.origin);
+      const url = new URL(path, window.location.origin);
       url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
       return url.href;
     }
@@ -2373,6 +2473,7 @@ function liveHtml(slug) {
       talkStarting = true;
       talkActive = true;
       setTalkButton('pending', 'Connecting');
+      refreshFrameoAudioHardware();
       let talkStep = 'microphone permission';
 
       try {
@@ -2537,6 +2638,7 @@ function liveHtml(slug) {
         setEnded('Live token unavailable');
         return;
       }
+      refreshFrameoAudioHardware();
       setLoading('Waking camera and waiting for video');
 
       if (!window.mpegts) {
@@ -2574,6 +2676,8 @@ function liveHtml(slug) {
       });
 
       video.onplaying = () => {
+        refreshFrameoAudioHardware();
+        setTimeout(refreshFrameoAudioHardware, 1500);
         statusText.textContent = 'Receiving video';
         setTimeout(revealVideoIfReady, 250);
       };
@@ -2590,6 +2694,7 @@ function liveHtml(slug) {
       player.attachMediaElement(video);
       player.load();
       syncAudioButton();
+      setTimeout(refreshFrameoAudioHardware, 3000);
 
       try {
         await video.play();
@@ -2674,11 +2779,27 @@ function micTestHtml() {
       font-family: Inter, Roboto, Arial, sans-serif;
     }
     main {
-      width: min(720px, calc(100vw - 32px));
+      width: min(1180px, calc(100vw - 32px));
       margin: 0 auto;
-      padding: 28px 16px;
+      padding: 18px 16px;
       display: grid;
-      gap: 16px;
+      gap: 12px;
+    }
+    .page-header {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+    .layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1.05fr) minmax(360px, 0.95fr);
+      gap: 12px;
+      align-items: start;
+    }
+    .panel {
+      display: grid;
+      gap: 12px;
+      min-width: 0;
     }
     h1 {
       margin: 0;
@@ -2704,6 +2825,11 @@ function micTestHtml() {
       font-size: 17px;
       font-weight: 800;
     }
+    .mini-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
     button {
       min-height: 46px;
       border: 0;
@@ -2720,7 +2846,8 @@ function micTestHtml() {
     .button-row {
       display: flex;
       flex-wrap: wrap;
-      gap: 10px;
+      gap: 12px;
+      align-items: center;
     }
     .button-row button {
       flex: 0 1 auto;
@@ -2782,30 +2909,90 @@ function micTestHtml() {
       font: 13px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
       color: rgba(248,250,252,0.78);
     }
+    details {
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 8px;
+      background: #0f1d29;
+      overflow: hidden;
+    }
+    summary {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      min-height: 48px;
+      padding: 0 14px;
+      cursor: pointer;
+      list-style: none;
+      color: rgba(248,250,252,0.66);
+      font-size: 13px;
+      font-weight: 850;
+      text-transform: uppercase;
+    }
+    summary::-webkit-details-marker {
+      display: none;
+    }
+    summary::after {
+      content: '+';
+      color: rgba(248,250,252,0.88);
+      font-size: 20px;
+      line-height: 1;
+    }
+    details[open] summary::after {
+      content: '-';
+    }
+    .summary-meta {
+      margin-left: auto;
+      color: rgba(248,250,252,0.48);
+      font-size: 12px;
+      text-transform: none;
+    }
+    details pre {
+      padding: 0 14px 14px;
+      max-height: 280px;
+      overflow: auto;
+    }
+    @media (max-width: 860px) {
+      .layout,
+      .mini-grid {
+        grid-template-columns: 1fr;
+      }
+    }
   </style>
 </head>
 <body>
   <main>
-    <button class="back" type="button" onclick="history.length > 1 ? history.back() : (window.location.href = '/')">&#8592; Back</button>
-    <h1>Wallpanel Mic Test</h1>
-    <div class="row"><div class="label">Secure context</div><div id="secure" class="value"></div></div>
-    <div class="row"><div class="label">Media APIs</div><div id="apis" class="value"></div></div>
-    <div class="row"><div class="label">Status</div><div id="status" class="value">Ready</div></div>
-    <div class="row"><div class="label">Microphone</div><select id="micSelect"><option value="">Browser default (Android default input)</option></select></div>
-    <div class="row"><div class="label">Active input</div><pre id="activeInput">None yet</pre></div>
-    <div class="row"><div class="label">OS audio devices</div><pre id="osDevices">Not checked yet</pre></div>
-    <div class="button-row">
-      <button id="readOsDevices" type="button">Read OS Devices</button>
-      <button id="unlockLabels" type="button">Unlock Names</button>
-      <button id="refreshDevices" type="button">Refresh</button>
+    <div class="page-header">
+      <button class="back" type="button" onclick="history.length > 1 ? history.back() : (window.location.href = '/')">&#8592; Back</button>
+      <h1>Wallpanel Mic Test</h1>
     </div>
     <div class="button-row">
       <button id="start" type="button">Start Mic Test</button>
       <button id="stop" type="button">Stop</button>
+      <button id="readOsDevices" type="button">Read OS Devices</button>
+      <button id="unlockLabels" type="button">Unlock Names</button>
+      <button id="refreshDevices" type="button">Refresh</button>
     </div>
-    <div class="meter-shell">
-      <div class="meter-label"><span>Input level</span><span id="meterValue">0%</span></div>
-      <div class="meter"><div id="bar"></div></div>
+    <div class="layout">
+      <section class="panel">
+        <div class="row"><div class="label">Status</div><div id="status" class="value">Ready</div></div>
+        <div class="row"><div class="label">Microphone</div><select id="micSelect"><option value="">Browser default (Android default input)</option></select></div>
+        <div class="meter-shell">
+          <div class="meter-label"><span>Input level</span><span id="meterValue">0%</span></div>
+          <div class="meter"><div id="bar"></div></div>
+        </div>
+      </section>
+      <section class="panel">
+        <div class="mini-grid">
+          <div class="row"><div class="label">Secure context</div><div id="secure" class="value"></div></div>
+          <div class="row"><div class="label">Media APIs</div><div id="apis" class="value"></div></div>
+        </div>
+        <div class="row"><div class="label">Active input</div><pre id="activeInput">None yet</pre></div>
+        <details id="osDetails">
+          <summary><span>OS audio devices</span><span id="osUpdated" class="summary-meta">Not checked yet</span></summary>
+          <pre id="osDevices">Not checked yet</pre>
+        </details>
+      </section>
     </div>
   </main>
   <script>
@@ -2814,6 +3001,7 @@ function micTestHtml() {
     const statusText = document.getElementById('status');
     const activeInput = document.getElementById('activeInput');
     const osDevices = document.getElementById('osDevices');
+    const osUpdated = document.getElementById('osUpdated');
     const micSelect = document.getElementById('micSelect');
     const bar = document.getElementById('bar');
     const meterValue = document.getElementById('meterValue');
@@ -2826,6 +3014,10 @@ function micTestHtml() {
 
     function setStatus(text) {
       statusText.textContent = text;
+    }
+
+    function updateOsTimestamp(prefix = 'Updated') {
+      osUpdated.textContent = prefix + ' ' + new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' });
     }
 
     function apiSummary() {
@@ -2893,6 +3085,7 @@ function micTestHtml() {
       ].join('; ');
       try {
         osDevices.textContent = 'Reading Android audio devices...';
+        updateOsTimestamp('Reading');
         fully.runSuCommand('sh -c ' + shellQuote(command));
         await new Promise(resolve => setTimeout(resolve, 900));
         const cards = fully.readFile(cardsPath) || '';
@@ -2905,9 +3098,11 @@ function micTestHtml() {
           '/proc/asound/devices',
           devices.trim() || '(empty)'
         ].join('\\n');
+        updateOsTimestamp();
         await listDevices();
       } catch (error) {
         osDevices.textContent = 'OS audio poll failed: ' + (error.message || String(error));
+        updateOsTimestamp('Failed');
       }
     }
 
@@ -3395,6 +3590,16 @@ const server = http.createServer(async (req, res) => {
     lastError = error.message;
     sendJson(res, 500, { ok: false, error: error.message });
   }
+});
+
+server.on('upgrade', (req, socket, head) => {
+  const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+  if (url.pathname.startsWith('/api/blink_liveview_proxy/')) {
+    proxyHaWebSocket(req, socket, head, `${url.pathname}${url.search}`);
+    return;
+  }
+  socket.write('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n');
+  socket.destroy();
 });
 
 let shuttingDown = false;
