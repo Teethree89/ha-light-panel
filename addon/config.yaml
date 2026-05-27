@@ -1,0 +1,33 @@
+name: "HA Light Panel"
+description: >-
+  SVG-based Home Assistant panel for low-power displays, tablets, and digital frames.
+  Polls entity state and renders a live climate/camera dashboard — no frontend integration required.
+version: "0.1.0"
+slug: "ha_light_panel"
+init: false
+arch:
+  - aarch64
+  - amd64
+  - armhf
+  - armv7
+startup: services
+boot: auto
+options:
+  ha_token: ""
+  ha_url: "http://homeassistant.local:8123"
+  ha_browser_url: ""
+  port: 8890
+  poll_ms: 2000
+schema:
+  ha_token: str
+  ha_url: str
+  ha_browser_url: str?
+  port: int
+  poll_ms: int
+ports:
+  8890/tcp: 8890
+ports_description:
+  8890/tcp: "HA Light Panel web interface"
+map:
+  - data:rw
+url: "https://github.com/Teethree89/ha-light-panel"
