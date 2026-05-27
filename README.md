@@ -87,7 +87,7 @@ http://your-server:8890/
 
 ## Configuration
 
-See [docs/configuration.md](docs/configuration.md).
+See [https://github.com/Teethree89/ha-light-panel/blob/main/docs/configuration.md](https://github.com/Teethree89/ha-light-panel/blob/main/docs/configuration.md).
 
 The most important sections are:
 
@@ -104,7 +104,7 @@ HA Light Panel can show Blink snapshots by using normal Home Assistant camera
 entities. For direct live view, push-to-talk, local clip browsing, and manual
 snapshot refresh buttons, it expects the separate Blink Liveview Proxy package:
 
-[../blink-liveview-proxy](../blink-liveview-proxy)
+[https://github.com/Teethree89/ha-blink-live-view-proxy](https://github.com/Teethree89/ha-blink-live-view-proxy)
 
 The proxy package contains:
 
@@ -119,16 +119,19 @@ for snapshots, and set `liveEntity` to the matching proxy camera for live view.
 The optional `liveProxyEntity` and `snapshotRefreshPath` settings let the panel
 show proxy health and request fresh Blink snapshots from the proxy integration.
 
-See the camera configuration notes in [docs/configuration.md](docs/configuration.md#cameras),
+See the camera configuration notes in
+[https://github.com/Teethree89/ha-light-panel/blob/main/docs/configuration.md#cameras](https://github.com/Teethree89/ha-light-panel/blob/main/docs/configuration.md#cameras),
 and the proxy setup guide in
-[../blink-liveview-proxy/docs/INSTALL.md](../blink-liveview-proxy/docs/INSTALL.md).
+[https://github.com/Teethree89/ha-blink-live-view-proxy/blob/main/docs/INSTALL.md](https://github.com/Teethree89/ha-blink-live-view-proxy/blob/main/docs/INSTALL.md).
 
 ## Display Setup
 
-For a Frameo or similar Android picture frame, see [docs/frameo-fully-kiosk.md](docs/frameo-fully-kiosk.md).
+For a Frameo or similar Android picture frame, see
+[https://github.com/Teethree89/ha-light-panel/blob/main/docs/frameo-fully-kiosk.md](https://github.com/Teethree89/ha-light-panel/blob/main/docs/frameo-fully-kiosk.md).
 
 For USB microphone, SSH, OTG host mode, and push-to-talk notes on Frameo-style
-frames, see [docs/frameo-usb-microphone.md](docs/frameo-usb-microphone.md).
+frames, see
+[https://github.com/Teethree89/ha-light-panel/blob/main/docs/frameo-usb-microphone.md](https://github.com/Teethree89/ha-light-panel/blob/main/docs/frameo-usb-microphone.md).
 
 Short version:
 
@@ -141,13 +144,13 @@ Short version:
 
 Plain HTTP is usually fine for a trusted LAN display. HTTPS becomes important for browser microphone access, push-to-talk, remote access, or anything leaving your LAN.
 
-See [docs/https.md](docs/https.md).
+See [https://github.com/Teethree89/ha-light-panel/blob/main/docs/https.md](https://github.com/Teethree89/ha-light-panel/blob/main/docs/https.md).
 
 ## Security Notes
 
 This app is designed for a trusted LAN. It holds a Home Assistant token and exposes controls. Do not publish it directly to the internet. If you need remote access, put it behind HTTPS and authentication.
 
-See [SECURITY.md](SECURITY.md).
+See [https://github.com/Teethree89/ha-light-panel/blob/main/SECURITY.md](https://github.com/Teethree89/ha-light-panel/blob/main/SECURITY.md).
 
 ## Why
 
