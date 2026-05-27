@@ -18,10 +18,25 @@ If this saves you a little time, [buy me a coffee](https://paypal.me/ABPaintball
 - Optional camera snapshot grid
 - Optional Blink live-view proxy integration hooks
 - Service-backed action buttons for comfort tweaks and room balancing
-- Docker and systemd deployment examples
+- HAOS add-on, Docker, and systemd deployment examples
 - No runtime npm dependencies
 
-## Quick Start
+## Home Assistant OS Add-on
+
+The easiest install path if you're running Home Assistant OS or Supervised:
+
+1. Go to **Settings → Add-ons → Add-on Store**.
+2. Click ⋮ → **Repositories** and add:
+   ```
+   https://github.com/Teethree89/ha-light-panel
+   ```
+3. Find **HA Light Panel**, click **Install**, then set your `ha_token` and `ha_url` in the add-on options and start it.
+
+The panel will be available at `http://<your-ha-host>:8890/`.
+
+See [addon/DOCS.md](https://github.com/Teethree89/ha-light-panel/blob/main/addon/DOCS.md) for the full option reference.
+
+## Quick Start (Node.js)
 
 1. Copy the example config:
 
