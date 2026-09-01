@@ -214,3 +214,181 @@ Liveview Proxy package documented in the
 ```
 
 The live camera page uses the `access_token` attribute from `liveEntity`.
+
+## Fallback Chains
+
+Any reading (`temp`, `humidity`, `battery`, and the `panel.metrics` entries) also
+accepts an array. Entries are tried in order and the first one with a usable
+value wins, which is how a card can prefer a dedicated sensor and fall back to a
+climate entity's attribute:
+
+```json
+{
+  "temp": [
+    "sensor.thermostat_current_temperature",
+    { "entity": "climate.main_thermostat", "attribute": "current_temperature" }
+  ]
+}
+```
+
+## Status Panel
+
+`panel.statusPanel` drives the optional side widget. Any key may be omitted; the
+widget simply renders `--` for readings it has no entity for. `alerts` is a list
+and the widget shows "Alert" while any of them is `on`.
+
+To echo the widget's status line inside a room card:
+
+```json
+{
+  "extra": { "type": "statusPanel" }
+}
+```
+
+For historical reasons this widget is still published as `sock` in the `/state`
+JSON payload.
+
+## Smoke and CO Panel
+
+`panel.safetyPanel.rooms` drives the smoke/CO strip and its detail modal. Each
+room combines any number of smoke sensors: the room reads as alarming if any is
+`on`, clear only if all are `off`, and unknown otherwise. `co` is optional and
+takes a single entity or a list; a room without one reports `na`.
+
+```json
+{
+  "panel": {
+    "safetyPanel": {
+      "rooms": [
+        {
+          "id": "kitchen",
+          "label": "Kitchen",
+          "smoke": [
+            "binary_sensor.kitchen_smoke_alarm",
+            "binary_sensor.kitchen_hardwire_smoke_alarm"
+          ],
+          "co": "binary_sensor.kitchen_co_alarm"
+        },
+        {
+          "id": "office",
+          "label": "Office",
+          "smoke": ["binary_sensor.office_smoke_alarm"]
+        }
+      ]
+    }
+  }
+}
+```
+
+The layout has room for five entries. Pair it with a `silenceAlarm` action to
+hush an active alarm from the panel:
+
+```json
+{
+  "panel": {
+    "actions": {
+      "silenceAlarm": {
+        "service": "script.hush_active_smoke_alarms",
+        "data": {}
+      }
+    }
+  }
+}
+```
+
+## Server Metrics
+
+The header strip can show host stats. All five are optional:
+
+```json
+{
+  "panel": {
+    "metrics": {
+      "cpuTemp": "sensor.ha_server_cpu_temp",
+      "ddrTemp": "sensor.ha_server_ddr_temp",
+      "ramUsed": "sensor.ha_server_ram_used",
+      "cpuLoad": "sensor.ha_server_cpu_load",
+      "diskUsed": "sensor.ha_server_disk_used"
+    }
+  }
+}
+```
+
+## Thermostats
+
+`panel.thermostats` feeds the thermostat readings in the `/state` payload.
+
+```json
+{
+  "panel": {
+    "thermostats": {
+      "primary": {
+        "entity": "climate.main_thermostat",
+        "tempEntity": "sensor.main_thermostat_temperature"
+      },
+      "mini": { "entity": "climate.mini_split" }
+    }
+  }
+}
+```
+
+`tempEntity` is optional; without it the panel reads the `current_temperature`
+attribute of `entity`.
+
+## Operating States
+
+`panel.mode` decides the headline status. `heatingStates` and `coolingStates`
+list the values of `operatingState` that mean the system is actively running,
+since those strings are specific to your automation:
+
+```json
+{
+  "panel": {
+    "mode": {
+      "operatingState": "sensor.hvac_operating_state",
+      "heatingStates": ["gree_heating"],
+      "coolingStates": ["gree_cooling"]
+    }
+  }
+}
+```
+
+## Balance Rooms
+
+`panel.balance` gates the Balance Rooms button and explains why it is
+unavailable. `focusRooms` must contain the room labels your focus-zone sensor
+can report:
+
+```json
+{
+  "panel": {
+    "balance": {
+      "manualOverrideTimer": "timer.airflow_manual_override",
+      "focusZone": "sensor.airflow_focus_zone",
+      "focusRooms": ["Living Room", "Master Bedroom", "Nursery"],
+      "activeStates": ["gree_cooling", "gree_heating"]
+    }
+  }
+}
+```
+
+## Defaults and Precedence
+
+Config keys are merged over the built-in defaults, so a config file only needs
+the keys it wants to change. Objects merge key by key; arrays and scalars are
+replaced outright, so listing three rooms yields exactly three room cards.
+
+Environment variables win over the config file:
+
+| Setting | Env var | Config key |
+|---|---|---|
+| Bind address | `HOST` | `server.host` |
+| Port | `PORT` | `server.port` |
+| Poll interval | `POLL_MS` | `server.pollMs` |
+| HA URL | `HA_URL` | `homeAssistant.url` |
+| Browser URL | `HA_BROWSER_URL` | `homeAssistant.browserUrl` |
+| Token | `HA_TOKEN` | — (never stored in config) |
+
+The panel logs which config file it loaded at startup, or that it fell back to
+the built-in defaults. A config file that fails to parse is reported and the
+defaults are used, so a bad edit degrades instead of taking the panel down.

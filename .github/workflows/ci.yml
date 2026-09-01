@@ -1,0 +1,27 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: node --check server.js
+      - run: node scripts/validate-config.js examples/frameo-climate.json
+      - run: node scripts/validate-config.js examples/starter.json
+      - name: Verify addon/server.js is in sync
+        run: |
+          if ! diff -q server.js addon/server.js > /dev/null 2>&1; then
+            echo "addon/server.js is out of sync with server.js. Run: cp server.js addon/server.js"
+            diff server.js addon/server.js
+            exit 1
+          fi
+      - name: Verify the add-on repository structure
+        run: node scripts/validate-addon-repo.js

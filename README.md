@@ -12,6 +12,7 @@ If this saves you a little time, [buy me a coffee](https://paypal.me/ABPaintball
 
 - Lightweight climate dashboard with six room cards
 - Compact SVG UI, no frontend framework
+- Landscape kiosk layout that reflows for portrait phones
 - Home Assistant REST polling
 - Config-driven entity mapping
 - Temperature, humidity, battery, HVAC mode, comfort band, and status-panel cards
@@ -31,18 +32,44 @@ The easiest install path if you're running Home Assistant OS or Supervised:
    https://github.com/Teethree89/ha-light-panel
    ```
 3. Find **HA Light Panel**, click **Install**, then set your `ha_token` and `ha_url` in the add-on options and start it.
+4. To show your own sensors, copy [examples/starter.json](https://github.com/Teethree89/ha-light-panel/blob/main/examples/starter.json) to `/config/ha-light-panel.json`, edit the entity IDs, and restart the add-on. Without it the panel renders its built-in reference layout.
 
 The panel will be available at `http://<your-ha-host>:8890/`.
 
 See [addon/DOCS.md](https://github.com/Teethree89/ha-light-panel/blob/main/addon/DOCS.md) for the full option reference.
 
-## Quick Start (Node.js)
+## Try It Without Home Assistant
 
-1. Copy the example config:
+To see the panel before wiring anything up:
 
 ```sh
-cp examples/frameo-climate.json config.json
+npm run demo
 ```
+
+Then open `http://127.0.0.1:8890/`.
+
+This starts a stub Home Assistant with plausible readings and points the panel
+at it — no token, no real HA, nothing touching your own entities. The panel
+speaks to Home Assistant over exactly two REST endpoints (`GET /api/states` and
+`POST /api/services/...`), so the stub is indistinguishable from the real thing
+as far as the panel is concerned. Buttons work; they log the service call
+instead of firing it.
+
+## Quick Start (Node.js)
+
+New here? The [getting started guide](https://github.com/Teethree89/ha-light-panel/blob/main/docs/getting-started.md)
+walks through the whole thing, including how to find your entity ids and what to
+check when a card shows `--`.
+
+1. Copy the starter config:
+
+```sh
+cp examples/starter.json config.json
+```
+
+`examples/starter.json` is a small, commented config with three room cards.
+`examples/frameo-climate.json` is the everything-switched-on reference — useful
+to crib from, but a lot to edit as a first step.
 
 2. Create a Home Assistant long-lived access token.
 
@@ -78,7 +105,7 @@ http://localhost:8890/
 ## Docker
 
 ```sh
-cp examples/frameo-climate.json config.json
+cp examples/starter.json config.json
 cp .env.example .env
 docker compose -f docker-compose.example.yml --env-file .env up -d --build
 ```
@@ -109,9 +136,17 @@ The most important sections are:
 - `homeAssistant`: HA URL and optional browser URL
 - `panel.metrics`: top-card entity IDs
 - `panel.rooms`: six room cards
+- `panel.mode`: which sensors decide the headline status
+- `panel.comfort`: comfort-band targets and schedule state
 - `panel.actions`: service calls for buttons
 - `panel.statusPanel`: optional side status widget
+- `panel.balance`: gating for the Balance Rooms button
 - `cameras`: optional camera snapshot/live mappings
+
+Config keys merge over built-in defaults, so a config file only needs the keys
+it changes, and environment variables win over both. The panel logs which config
+file it loaded at startup. If the file is missing or fails to parse, it says so
+and falls back to the defaults rather than failing to start.
 
 ## Blink Live View Proxy
 
@@ -128,6 +163,25 @@ The proxy package contains:
 - a small Python service that logs in to Blink with BlinkPy and bridges the
   direct Blink live-view stream
 - install, configuration, systemd, and known-limitations docs
+
+### Installing the proxy
+
+The proxy repo ships both a `repository.yaml` and a `hacs.json`, so it installs
+either way — the two halves are separate mechanisms and you need both:
+
+| Piece | Where it goes | How to install |
+|---|---|---|
+| Proxy service | Add-on store | ⋮ → **Repositories** → add the proxy repo URL, install its add-on |
+| Proxy integration | HACS | HACS → Integrations → ⋮ → **Custom repositories** → add the proxy repo URL |
+
+HA Light Panel itself is an **add-on**, not a HACS integration, so it is added
+under Settings → Add-ons → Add-on Store → ⋮ → Repositories. HACS will not find
+it, and that is expected.
+
+Without the proxy installed the panel still works: snapshots, climate, rooms,
+and motion toggles all use plain Home Assistant APIs. Only live view,
+push-to-talk, clip browsing, and manual snapshot refresh need it — those routes
+return an error until the proxy is running.
 
 In this panel's camera config, set `sourceEntity` to the normal HA Blink camera
 for snapshots, and set `liveEntity` to the matching proxy camera for live view.
@@ -147,6 +201,19 @@ For a Frameo or similar Android picture frame, see
 For USB microphone, SSH, OTG host mode, and push-to-talk notes on Frameo-style
 frames, see
 [the Frameo USB microphone guide](https://github.com/Teethree89/ha-light-panel/blob/main/docs/frameo-usb-microphone.md).
+
+### Screen sizes
+
+The panel is designed as a 1280x800 canvas and scales to fit, so any landscape
+display renders it as intended — frames, tablets, and desktop browsers all get
+the native layout.
+
+Portrait screens (a phone, or the panel embedded in the Home Assistant app) get
+a reflowed layout instead of a letterboxed one: the status cards become a 2x2
+grid, rooms stack into a single full-width column, action buttons stack, and the
+page scrolls vertically. The camera grid reflows to one camera per row. The
+switch is driven by `@media (max-aspect-ratio: 1 / 1)` and reverses exactly when
+you rotate back, so landscape behaviour is untouched.
 
 Short version:
 

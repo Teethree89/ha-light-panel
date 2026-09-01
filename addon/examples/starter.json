@@ -1,0 +1,102 @@
+{
+  // ---------------------------------------------------------------------
+  // Starter config for HA Light Panel.
+  //
+  // Replace every entity id below with one of your own, delete what you do
+  // not have, and you are done. Find entity ids in Home Assistant under
+  // Developer tools -> States.
+  //
+  // Every section is optional except panel.rooms. Anything you leave out
+  // simply is not drawn -- the panel does not error on a missing entity, it
+  // shows "--". Start small and add sections once the basics render.
+  //
+  // For the full key reference see docs/configuration.md.
+  // For a maximal example see examples/frameo-climate.json.
+  // ---------------------------------------------------------------------
+
+  "homeAssistant": {
+    // Where the panel reaches Home Assistant. The token comes from HA_TOKEN,
+    // never from this file.
+    "url": "http://homeassistant.local:8123"
+  },
+
+  "panel": {
+    "title": "Home Panel",
+
+    // Headline numbers across the top of the panel.
+    "metrics": {
+      "roomTemp": "sensor.hallway_temperature",
+      "roomHumidity": "sensor.hallway_humidity",
+      "outsideTemp": "sensor.outside_temperature"
+    },
+
+    // Room cards. This is the only required section. Up to six.
+    // `temp` is required per room; `humidity` and `battery` are optional.
+    "rooms": [
+      {
+        "id": "living",
+        "label": "Living Room",
+        "temp": "sensor.living_room_temperature",
+        "humidity": "sensor.living_room_humidity"
+      },
+      {
+        "id": "bedroom",
+        "label": "Bedroom",
+        "temp": "sensor.bedroom_temperature",
+        "humidity": "sensor.bedroom_humidity",
+        // Battery-powered sensor? Add its battery entity to show a level.
+        "battery": "sensor.bedroom_sensor_battery"
+      },
+      {
+        "id": "thermostat",
+        "label": "Thermostat",
+        // A climate entity has no state number, so read its attributes.
+        "temp": { "entity": "climate.my_thermostat", "attribute": "current_temperature" },
+        "humidity": { "entity": "climate.my_thermostat", "attribute": "current_humidity" },
+        // Renders "Heating" / "Cooling" / "Auto temp" under the reading.
+        "extra": { "entity": "climate.my_thermostat", "hvacModeLabel": true }
+      }
+    ]
+
+    // ---------------------------------------------------------------------
+    // Everything below is optional. Uncomment a block once the rooms render.
+    // ---------------------------------------------------------------------
+
+    // Target temperature range shown in the "Comfort band" card.
+    // "comfort": {
+    //   "heatTarget": "sensor.heat_target",
+    //   "coolTarget": "sensor.cool_target"
+    // },
+
+    // Decides the headline status card (Heating / Cooling / Comfort OK).
+    // "mode": {
+    //   "heatDemand": "binary_sensor.heat_demand",
+    //   "coolDemand": "binary_sensor.cool_demand"
+    // },
+
+    // Buttons. Each one calls a Home Assistant service.
+    // "actions": {
+    //   "cooler": { "service": "script.adjust_temperature", "data": { "direction": "down", "step": 1 } },
+    //   "warmer": { "service": "script.adjust_temperature", "data": { "direction": "up", "step": 1 } }
+    // },
+
+    // Smoke / CO strip. A room alarms if any listed sensor is "on".
+    // "safetyPanel": {
+    //   "rooms": [
+    //     { "id": "kitchen", "label": "Kitchen", "smoke": ["binary_sensor.kitchen_smoke"], "co": "binary_sensor.kitchen_co" }
+    //   ]
+    // }
+  }
+
+  // Camera grid. Needs the Blink Liveview Proxy only for live view and clips;
+  // plain snapshots work with any Home Assistant camera entity.
+  // "cameras": [
+  //   {
+  //     "slug": "driveway",
+  //     "label": "Driveway",
+  //     "sourceEntity": "camera.driveway",
+  //     "motionEntity": "binary_sensor.driveway_motion",
+  //     "motionSwitch": "switch.driveway_motion_detection"
+  //   }
+  // ]
+}

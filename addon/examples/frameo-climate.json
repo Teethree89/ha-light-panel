@@ -25,7 +25,12 @@
       "roomHumidity": "sensor.home_humidity",
       "averageTemp": "sensor.average_temperature",
       "outsideTemp": "sensor.outside_temperature",
-      "action": "sensor.hvac_inferred_action"
+      "action": "sensor.hvac_inferred_action",
+      "cpuTemp": "sensor.ha_server_cpu_temp",
+      "ddrTemp": "sensor.ha_server_ddr_temp",
+      "ramUsed": "sensor.ha_server_ram_used",
+      "cpuLoad": "sensor.ha_server_cpu_load",
+      "diskUsed": "sensor.ha_server_disk_used"
     },
     "mode": {
       "operatingState": "sensor.hvac_operating_state",
@@ -38,7 +43,13 @@
       "thermostatUnavailable": "binary_sensor.active_thermostat_unavailable",
       "heatDemand": "binary_sensor.heat_demand",
       "coolDemand": "binary_sensor.cool_demand",
-      "humidityDemand": "binary_sensor.dehumidify_recommended"
+      "humidityDemand": "binary_sensor.dehumidify_recommended",
+      "heatingStates": [
+        "hvac_heating"
+      ],
+      "coolingStates": [
+        "hvac_cooling"
+      ]
     },
     "comfort": {
       "heatTarget": "sensor.heat_target",
@@ -51,11 +62,17 @@
     "actions": {
       "cooler": {
         "service": "script.adjust_comfort_temperature",
-        "data": { "direction": "down", "step": 1 }
+        "data": {
+          "direction": "down",
+          "step": 1
+        }
       },
       "warmer": {
         "service": "script.adjust_comfort_temperature",
-        "data": { "direction": "up", "step": 1 }
+        "data": {
+          "direction": "up",
+          "step": 1
+        }
       },
       "reset": {
         "service": "script.reset_comfort_temperature",
@@ -63,6 +80,10 @@
       },
       "assist": {
         "service": "script.start_airflow_assist_now",
+        "data": {}
+      },
+      "silenceAlarm": {
+        "service": "script.hush_active_smoke_alarms",
         "data": {}
       }
     },
@@ -112,8 +133,14 @@
       {
         "id": "thermostat",
         "label": "Thermostat",
-        "temp": { "entity": "climate.main_thermostat", "attribute": "current_temperature" },
-        "humidity": { "entity": "climate.main_thermostat", "attribute": "current_humidity" },
+        "temp": {
+          "entity": "climate.main_thermostat",
+          "attribute": "current_temperature"
+        },
+        "humidity": {
+          "entity": "climate.main_thermostat",
+          "attribute": "current_humidity"
+        },
         "extra": {
           "entity": "climate.main_thermostat",
           "hvacModeLabel": true
@@ -122,10 +149,16 @@
       {
         "id": "mini_split",
         "label": "Mini Split",
-        "temp": { "entity": "climate.mini_split", "attribute": "current_temperature" },
+        "temp": {
+          "entity": "climate.mini_split",
+          "attribute": "current_temperature"
+        },
         "miniStatus": {
           "mode": "climate.mini_split",
-          "fan": { "entity": "climate.mini_split", "attribute": "fan_mode" },
+          "fan": {
+            "entity": "climate.mini_split",
+            "attribute": "fan_mode"
+          },
           "action": "sensor.mini_split_inferred_action"
         }
       },
@@ -134,9 +167,75 @@
         "label": "Whole Home",
         "temp": "sensor.average_temperature",
         "humidity": "sensor.home_humidity",
-        "extra": { "type": "comfortStatus" }
+        "extra": {
+          "type": "comfortStatus"
+        }
       }
-    ]
+    ],
+    "thermostats": {
+      "primary": {
+        "entity": "climate.main_thermostat",
+        "tempEntity": "sensor.main_thermostat_temperature"
+      },
+      "mini": {
+        "entity": "climate.mini_split"
+      }
+    },
+    "balance": {
+      "manualOverrideTimer": "timer.airflow_manual_override",
+      "focusZone": "sensor.airflow_focus_zone",
+      "focusRooms": [
+        "Living Room",
+        "Bedroom",
+        "Nursery"
+      ],
+      "activeStates": [
+        "hvac_cooling",
+        "hvac_heating"
+      ]
+    },
+    "safetyPanel": {
+      "rooms": [
+        {
+          "id": "kitchen",
+          "label": "Kitchen",
+          "smoke": [
+            "binary_sensor.kitchen_smoke_alarm",
+            "binary_sensor.kitchen_hardwire_smoke_alarm"
+          ],
+          "co": "binary_sensor.kitchen_co_alarm"
+        },
+        {
+          "id": "living",
+          "label": "Living",
+          "smoke": [
+            "binary_sensor.living_room_smoke_alarm"
+          ]
+        },
+        {
+          "id": "bedroom",
+          "label": "Bedroom",
+          "smoke": [
+            "binary_sensor.bedroom_smoke_alarm"
+          ]
+        },
+        {
+          "id": "nursery",
+          "label": "Nursery",
+          "smoke": [
+            "binary_sensor.nursery_smoke_alarm"
+          ],
+          "co": "binary_sensor.nursery_co_alarm"
+        },
+        {
+          "id": "garage",
+          "label": "Garage",
+          "smoke": [
+            "binary_sensor.garage_smoke_alarm"
+          ]
+        }
+      ]
+    }
   },
   "cameraPanel": {
     "alarmEntity": "alarm_control_panel.home_alarm",

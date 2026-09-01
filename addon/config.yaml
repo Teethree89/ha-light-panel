@@ -16,12 +16,14 @@ options:
   ha_token: ""
   ha_url: "http://homeassistant.local:8123"
   ha_browser_url: ""
+  config_path: "/config/ha-light-panel.json"
   port: 8890
   poll_ms: 2000
 schema:
   ha_token: str
   ha_url: str
   ha_browser_url: str?
+  config_path: str?
   port: int
   poll_ms: int
 ports:
@@ -30,4 +32,5 @@ ports_description:
   8890/tcp: "HA Light Panel web interface"
 map:
   - data:rw
+  - config:ro
 url: "https://github.com/Teethree89/ha-light-panel"
