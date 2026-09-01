@@ -16,6 +16,8 @@ jobs:
         uses: hacs/action@main
         with:
           category: integration
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   hassfest:
     runs-on: ubuntu-latest
