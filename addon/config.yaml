@@ -2,7 +2,7 @@ name: "HA Light Panel"
 description: >-
   SVG-based Home Assistant panel for low-power displays, tablets, and digital frames.
   Polls entity state and renders a live climate/camera dashboard — no frontend integration required.
-version: "0.1.0"
+version: "0.2.0"
 slug: "ha_light_panel"
 init: false
 arch:
