@@ -29,7 +29,7 @@ http://192.168.1.20:8890/
 Avoid this until you have confirmed Android resolves it:
 
 ```text
-http://ha-server.local:8890/
+http://homeassistant.local:8890/
 ```
 
 Many Android WebViews do not resolve `.local` mDNS names reliably. If the page

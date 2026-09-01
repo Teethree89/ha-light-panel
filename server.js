@@ -40,7 +40,7 @@ const DEFAULT_CONFIG = {
     pollMs: 2000
   },
   homeAssistant: {
-    url: 'http://ha-server.local:8123',
+    url: 'http://homeassistant.local:8123',
     browserUrl: '',
     secureBrowserUrl: ''
   },
@@ -516,7 +516,7 @@ function haBaseUrl() {
     process.env.HA_URL ||
     CONFIG.homeAssistant?.url ||
     readSecretField('Home Assistant UI', 'URL') ||
-    'http://ha-server.local:8123'
+    'http://homeassistant.local:8123'
   );
 }
 

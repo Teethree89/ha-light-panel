@@ -17,10 +17,30 @@ If this saves you a little time, [buy me a coffee](https://paypal.me/ABPaintball
 - Config-driven entity mapping
 - Temperature, humidity, battery, HVAC mode, comfort band, and status-panel cards
 - Optional camera snapshot grid
-- Optional Blink live-view proxy integration hooks
+- Optional settings page for humidity-biased cooling and seasonal mode
+- Optional Blink live-view proxy integration hooks, health modal, and SMS re-auth
 - Service-backed action buttons for comfort tweaks and room balancing
+- HACS integration that proxies the panel through Home Assistant, so it works
+  over Nabu Casa and anything else that only tunnels port 8123
 - HAOS add-on, Docker, and systemd deployment examples
 - No runtime npm dependencies
+
+## HACS Integration
+
+The panel runs on its own port, which anything that only tunnels Home Assistant
+core — Nabu Casa Cloud especially — cannot reach. The bundled `ha_light_panel`
+integration reverse-proxies the panel at `/api/ha_light_panel/` so it is
+reachable wherever Home Assistant is.
+
+1. In **HACS**, click ⋮ → **Custom repositories**.
+2. Add `https://github.com/Teethree89/ha-light-panel` with type **Integration**.
+3. Download **HA Light Panel** and restart Home Assistant.
+4. **Settings → Devices & Services → Add Integration → HA Light Panel**, then
+   point it at the panel (`http://127.0.0.1:8890` for a systemd install on the
+   same host).
+
+This proxies a panel you are already running; it does not run one. See
+[docs/integration.md](https://github.com/Teethree89/ha-light-panel/blob/main/docs/integration.md).
 
 ## Home Assistant OS Add-on
 

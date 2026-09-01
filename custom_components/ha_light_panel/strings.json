@@ -1,0 +1,16 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "HA Light Panel",
+        "description": "Where the panel is listening. Home Assistant proxies it at /api/ha_light_panel/ so it is reachable wherever Home Assistant is.",
+        "data": {
+          "upstream": "Panel URL"
+        }
+      }
+    },
+    "abort": {
+      "single_instance_allowed": "HA Light Panel is already configured."
+    }
+  }
+}
