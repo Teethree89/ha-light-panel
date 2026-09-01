@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch for Blink re-auth requests spooled by HA Light Panel
+
+[Path]
+PathChanged=/var/spool/blink-reauth/request.json
+MakeDirectory=no
+
+[Install]
+WantedBy=multi-user.target

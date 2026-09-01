@@ -1,0 +1,10 @@
+[Unit]
+Description=Blink re-auth orchestrator (processes panel-spooled requests)
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/blink-reauth.py process-request
+# The OAuth signin, SMS wait, token install, and Home Assistant restart run
+# end to end inside this one invocation.
+TimeoutStartSec=420

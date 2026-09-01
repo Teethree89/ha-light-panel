@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch for live-view proxy restart requests spooled by HA Light Panel
+
+[Path]
+PathChanged=/var/spool/blink-liveview-proxy-restart/request
+MakeDirectory=no
+
+[Install]
+WantedBy=multi-user.target

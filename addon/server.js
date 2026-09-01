@@ -16,6 +16,24 @@ const { URL } = require('url');
 const CONFIG_PATH = process.env.CONFIG_PATH || path.resolve(__dirname, 'config.json');
 
 const DEFAULT_CONFIG = {
+  // Optional operations hooks for a Blink live-view proxy running next to the
+  // panel. Every field is opt-in: with `proxyStatusUrl` unset the Blink Status
+  // button, its modal, and the /cameras/blink-* routes do not exist, and the
+  // panel behaves exactly as it does without this section.
+  //
+  // The spool paths exist because a hardened panel service (NoNewPrivileges,
+  // ProtectSystem=strict) cannot restart services or run a privileged re-auth
+  // itself. It writes a request file instead, and a root systemd .path unit
+  // watches the spool and does the work. ops/systemd/ has units for both.
+  blinkOps: {
+    proxyStatusUrl: '',
+    reauthSpool: '',
+    reauthStatus: '',
+    proxyRestartSpool: '',
+    // Server-side self-heal: reload the HA Blink integration on this interval
+    // when the cameras look stuck. 0 disables it.
+    watchdogMs: 0
+  },
   server: {
     host: '0.0.0.0',
     port: 8890,
@@ -376,6 +394,7 @@ const DEPLOYMENT_SECTIONS = [
   ['panel', 'balance'],
   ['panel', 'actions'],
   ['panel', 'settings'],
+  ['blinkOps'],
   ['panel', 'thermostats'],
   ['panel', 'statusPanel'],
   ['panel', 'safetyPanel'],
@@ -453,6 +472,15 @@ function collectEntityIds(node, found = new Set()) {
     }
   }
   return found;
+}
+
+const BLINK_OPS = CONFIG.blinkOps || {};
+const BLINK_WATCHDOG_MS = Math.max(0, Number(BLINK_OPS.watchdogMs) || 0);
+
+// The Blink Status modal and its routes only exist when a proxy status URL is
+// configured; everything inside the modal degrades further on its own.
+function blinkOpsEnabled() {
+  return Boolean(BLINK_OPS.proxyStatusUrl);
 }
 
 const ENTITY_IDS = [...collectEntityIds({ panel: PANEL, cameraPanel: CAMERA_PANEL, cameras: CAMERAS })];
@@ -1388,6 +1416,135 @@ async function refreshCameraSnapshot(slug) {
   });
   await pollStates(true).catch(() => {});
   return cameraSummary(camera);
+}
+
+function blinkReauthStatus() {
+  if (!BLINK_OPS.reauthStatus) return { step: 'idle', updated: 0 };
+  try {
+    return JSON.parse(fs.readFileSync(BLINK_OPS.reauthStatus, 'utf8'));
+  } catch {
+    return { step: 'idle', updated: 0 };
+  }
+}
+
+// Writes the request the privileged .path unit is watching for. Written to a
+// temp file and renamed so the watcher never sees a half-written request.
+function blinkReauthRequest(action, extra = {}) {
+  if (!BLINK_OPS.reauthSpool) throw new Error('Blink re-auth is not configured.');
+  spoolWrite(BLINK_OPS.reauthSpool, JSON.stringify({ action, requestedAt: Date.now() / 1000, ...extra }), 'blink-reauth');
+}
+
+// Both spools are written to a temp file and renamed, so the watching .path
+// unit never sees a half-written request. A missing directory means the unit
+// was never installed, which is worth saying plainly.
+function spoolWrite(target, body, unitName) {
+  const tmp = target + '.tmp';
+  try {
+    fs.writeFileSync(tmp, body);
+    fs.renameSync(tmp, target);
+  } catch (error) {
+    if (error.code === 'ENOENT') {
+      throw new Error(`Spool directory ${path.dirname(target)} does not exist \u2014 install the ${unitName} systemd units (see ops/systemd/).`);
+    }
+    if (error.code === 'EACCES' || error.code === 'EPERM') {
+      throw new Error(`Cannot write ${target} \u2014 check the ${unitName} spool directory is writable by the panel's service user.`);
+    }
+    throw error;
+  }
+}
+
+// Waits until the orchestrator advances past `since` into one of `steps`.
+async function blinkReauthWait(steps, since, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    const status = blinkReauthStatus();
+    if (status.updated > since && steps.includes(status.step)) return status;
+  }
+  return { step: 'timeout' };
+}
+
+async function blinkProxyStatus() {
+  if (!BLINK_OPS.proxyStatusUrl) return { ok: false, error: 'not configured' };
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 5000);
+  try {
+    const response = await fetch(BLINK_OPS.proxyStatusUrl, { signal: controller.signal });
+    if (!response.ok) return { ok: false, error: `HTTP ${response.status}` };
+    const body = await response.json();
+    return { ok: true, ...body };
+  } catch (error) {
+    return { ok: false, error: error.message || 'request failed' };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function haBlinkIntegrationStatus() {
+  try {
+    const entries = await haFetch('/api/config/config_entries/entry');
+    const entry = (entries || []).find(item => item.domain === 'blink');
+    if (!entry) return { ok: false, error: 'no Blink config entry found' };
+    return { ok: true, state: entry.state, reason: entry.reason || null, disabledBy: entry.disabled_by || null };
+  } catch (error) {
+    return { ok: false, error: error.message || 'request failed' };
+  }
+}
+
+function triggerBlinkProxyRestart() {
+  if (!BLINK_OPS.proxyRestartSpool) throw new Error('Proxy restart is not configured.');
+  spoolWrite(BLINK_OPS.proxyRestartSpool, String(Date.now() / 1000), 'blink-liveview-proxy-restart');
+}
+
+async function restartBlinkProxyAndWait(timeoutMs) {
+  const before = await blinkProxyStatus();
+  const startedAt = before.ok ? before.process_started_at : 0;
+  try {
+    triggerBlinkProxyRestart();
+  } catch (error) {
+    return { ok: false, error: error.message };
+  }
+
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    const status = await blinkProxyStatus();
+    if (status.ok && status.process_started_at > startedAt) return { ok: true };
+  }
+  return { ok: false, error: 'restart did not complete in time' };
+}
+
+// Whether the live view proxy is stale enough that reopening the Cameras page
+// should trigger an automatic restart, independent of the dot-color health
+// check the token modal uses (that one also flags a maxed-out watchdog attempt
+// count, which an auto-restart here would just add to).
+function proxyNeedsAutoRestart(proxy) {
+  if (!proxy.ok || proxy.ready === false) return true;
+  if (Number.isFinite(proxy.token_seconds_remaining) && proxy.token_seconds_remaining <= 0) return true;
+  return false;
+}
+
+// Cooldown-gated, separate from the manual "Restart Proxy" button (which always
+// runs immediately) and from BLINK_RELOAD_COOLDOWN_MS (which governs the HA
+// Blink *integration* reload, not this standalone service).
+const AUTO_PROXY_RESTART_COOLDOWN_MS = 5 * 60 * 1000;
+let lastAutoProxyRestartAt = 0;
+
+async function autoRestartBlinkProxyIfStale() {
+  const proxy = await blinkProxyStatus();
+  if (!proxyNeedsAutoRestart(proxy)) {
+    return { stale: false, restarted: false };
+  }
+
+  const now = Date.now();
+  const cooldownRemainingMs = Math.max(0, AUTO_PROXY_RESTART_COOLDOWN_MS - (now - lastAutoProxyRestartAt));
+  if (lastAutoProxyRestartAt && cooldownRemainingMs > 0) {
+    return { stale: true, restarted: false, skipped: true, reason: 'cooldown', cooldownRemainingMs };
+  }
+
+  lastAutoProxyRestartAt = now;
+  const result = await restartBlinkProxyAndWait(30000);
+  return { stale: true, restarted: true, ...result };
 }
 
 async function reloadBlinkIntegration(options = {}) {
@@ -2742,6 +2899,546 @@ function frameoDeviceBootstrapScript() {
   </script>`;
 }
 
+// ── Blink ops UI ───────────────────────────────────────────────────────────
+// The Blink Status modal: live-view proxy health, HA Blink integration state,
+// a proxy restart, and the SMS re-auth flow. All three pieces return '' unless
+// blinkOps.proxyStatusUrl is configured, so the cameras page renders exactly as
+// it did before this section existed.
+
+function blinkOpsStyles() {
+  if (!blinkOpsEnabled()) return '';
+  return `    .modal-backdrop {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(2,6,23,0.72);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 50;
+    }
+    .modal-backdrop.hidden {
+      display: none;
+    }
+    .hidden {
+      display: none !important;
+    }
+    .modal {
+      width: min(440px, 92vw);
+      max-height: 84vh;
+      overflow-y: auto;
+      background: #0f1d29;
+      border: 1px solid rgba(255,255,255,0.14);
+      border-radius: 12px;
+      padding: 20px 22px;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+    }
+    .modal h2 {
+      margin: 0 0 6px;
+      font-size: 20px;
+      font-weight: 900;
+    }
+    .modal h3 {
+      margin: 16px 0 4px;
+      font-size: 14px;
+      font-weight: 850;
+      color: rgba(248,250,252,0.6);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .modal h3:first-of-type {
+      margin-top: 8px;
+    }
+    .modal .row {
+      display: flex;
+      justify-content: space-between;
+      gap: 14px;
+      padding: 7px 0;
+      border-bottom: 1px solid rgba(255,255,255,0.08);
+      font-size: 14px;
+    }
+    .modal .row:last-child {
+      border-bottom: 0;
+    }
+    .modal .row .k {
+      color: rgba(248,250,252,0.62);
+    }
+    .modal .row .v {
+      font-weight: 800;
+      text-align: right;
+    }
+    .modal-close, .modal-action {
+      margin-top: 18px;
+      width: 100%;
+      padding: 11px;
+      border: 0;
+      border-radius: 8px;
+      background: #334155;
+      color: #fff;
+      font-weight: 850;
+      font-size: 15px;
+      cursor: pointer;
+    }
+    .modal-action {
+      margin-top: 10px;
+      background: #0369a1;
+    }
+    .modal-action-warn {
+      background: #b45309;
+    }
+    .modal-action-indigo {
+      background: #4f46e5;
+    }
+    .reauth-code {
+      margin-top: 14px;
+      padding-top: 12px;
+      border-top: 1px solid rgba(255,255,255,0.08);
+    }
+    .reauth-code-label {
+      display: block;
+      font-size: 13px;
+      color: rgba(248,250,252,0.62);
+      margin-bottom: 8px;
+    }
+    .reauth-code-input {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 12px;
+      border: 1px solid rgba(255,255,255,0.18);
+      border-radius: 8px;
+      background: #0f172a;
+      color: #f8fafc;
+      font-size: 22px;
+      font-weight: 850;
+      letter-spacing: 6px;
+      text-align: center;
+    }
+    .reauth-code-input:focus {
+      outline: 2px solid #4f46e5;
+    }
+    .reauth-code-error {
+      margin-top: 8px;
+      font-size: 13px;
+      font-weight: 700;
+      color: #fca5a5;
+    }
+    .modal-action:active, .modal-close:active {
+      opacity: 0.8;
+    }
+    .modal-action:disabled {
+      opacity: 0.6;
+      cursor: wait;
+    }
+    .spinner {
+      width: 48px;
+      height: 48px;
+      margin: 0 auto;
+      border: 5px solid rgba(255,255,255,0.15);
+      border-top-color: #38bdf8;
+      border-radius: 50%;
+      animation: proxySpin 0.8s linear infinite;
+    }
+    @keyframes proxySpin {
+      to { transform: rotate(360deg); }
+    }`;
+}
+
+function blinkOpsMarkup() {
+  if (!blinkOpsEnabled()) return '';
+  return `  <div id="tokenModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="tokenModalTitle">
+    <div class="modal">
+      <h2 id="tokenModalTitle">Blink Token Status</h2>
+
+      <h3>Live view proxy</h3>
+      <div id="proxyStatusRows">
+        <div class="row"><span class="k">Token expires in</span><span id="proxyExpires" class="v">--</span></div>
+        <div class="row"><span class="k">Cameras</span><span id="proxyCameras" class="v">--</span></div>
+        <div class="row"><span class="k">Service uptime</span><span id="proxyUptime" class="v">--</span></div>
+        <div class="row"><span class="k">Watchdog restarts (30m)</span><span id="proxyWatchdogAttempts" class="v">--</span></div>
+        <div class="row"><span class="k">Last watchdog restart</span><span id="proxyWatchdogLast" class="v">--</span></div>
+      </div>
+      <div id="proxyUnreachableRow" class="row hidden"><span class="k">Status</span><span id="proxyError" class="v">--</span></div>
+      <button id="restartProxyButton" class="modal-action" type="button">Restart Proxy</button>
+
+      <h3>HA Blink integration</h3>
+      <div class="row"><span class="k">State</span><span id="integrationState" class="v">--</span></div>
+      <div id="integrationReasonRow" class="row hidden"><span class="k">Reason</span><span id="integrationReason" class="v">--</span></div>
+      <button id="reloadBlinkButton" class="modal-action modal-action-indigo" type="button">Reload Blink</button>
+      <button id="blinkReauthButton" class="modal-action modal-action-warn hidden" type="button">Re-auth Blink</button>
+      <div id="reauthStatusRow" class="row hidden"><span class="k">Re-auth</span><span id="reauthStatusText" class="v">--</span></div>
+      <div id="reauthCodeRow" class="reauth-code hidden">
+        <label class="reauth-code-label" for="reauthCodeInput">SMS code sent to <span id="reauthCodePhone">your phone</span></label>
+        <input id="reauthCodeInput" class="reauth-code-input" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="10" placeholder="000000">
+        <div id="reauthCodeError" class="reauth-code-error hidden"></div>
+        <button id="reauthCodeSubmit" class="modal-action modal-action-indigo" type="button">Submit code</button>
+        <button id="reauthCodeCancel" class="modal-action" type="button">Cancel re-auth</button>
+      </div>
+
+      <button id="tokenModalClose" class="modal-close" type="button">Close</button>
+    </div>
+  </div>
+
+  <div id="proxyRefreshOverlay" class="modal-backdrop hidden" role="status" aria-live="polite">
+    <div class="modal" style="text-align:center">
+      <div class="spinner" aria-hidden="true"></div>
+      <div id="proxyRefreshMessage" class="modal-body" style="margin:16px 0 0">Camera connection looks stale &mdash; reconnecting&hellip;</div>
+    </div>
+  </div>`;
+}
+
+function blinkOpsScript() {
+  if (!blinkOpsEnabled()) return '';
+  return `    const reauthStepText = {
+      starting: 'Contacting Blink...',
+      awaiting_code: 'Waiting for SMS code',
+      verifying: 'Verifying code...',
+      installing_tokens: 'Installing tokens (Home Assistant restarting)...',
+      enabling: 'Re-enabling integration...',
+      done: 'Re-auth complete',
+      cancelled: 'Re-auth cancelled',
+      error: 'Re-auth failed'
+    };
+    let reauthTimer = null;
+    let reauthInFlight = false;
+
+    function setReauthStatus(text) {
+      const row = document.getElementById('reauthStatusRow');
+      if (!text) {
+        row.classList.add('hidden');
+        return;
+      }
+      row.classList.remove('hidden');
+      setText('reauthStatusText', text);
+    }
+
+    function watchReauth() {
+      reauthInFlight = true;
+      if (reauthTimer) clearInterval(reauthTimer);
+      reauthTimer = setInterval(async () => {
+        let status;
+        try {
+          status = await (await fetch('/cameras/blink-reauth/status', { cache: 'no-store' })).json();
+        } catch (error) {
+          return;
+        }
+        const text = reauthStepText[status.step];
+        if (text) setReauthStatus(status.step === 'error' && status.error ? text + ': ' + status.error : text);
+        if (status.step === 'done' || status.step === 'error' || status.step === 'cancelled') {
+          clearInterval(reauthTimer);
+          reauthTimer = null;
+          reauthInFlight = false;
+          if (status.step === 'done') setTimeout(() => refreshState(), 5000);
+          loadTokenStatus();
+        }
+      }, 3000);
+    }
+
+    // Ask for the SMS code inside the modal rather than via window.prompt.
+    // Digits are filtered without a regex on purpose: this whole page is built
+    // inside a template literal, so a "\d" written here reaches the browser as
+    // a bare "d". That is exactly how the old check became /^d{4,8}$/, which
+    // could never match a numeric code - every correctly typed code was thrown
+    // away and the re-auth silently cancelled, burning the SMS. A mistyped code
+    // now shows an inline error and can be corrected without ending the session.
+    function askForCode(phone) {
+      return new Promise(resolve => {
+        const row = document.getElementById('reauthCodeRow');
+        const input = document.getElementById('reauthCodeInput');
+        const errorBox = document.getElementById('reauthCodeError');
+        const submit = document.getElementById('reauthCodeSubmit');
+        const cancel = document.getElementById('reauthCodeCancel');
+        document.getElementById('reauthCodePhone').textContent = phone || 'your phone';
+        input.value = '';
+        errorBox.classList.add('hidden');
+        row.classList.remove('hidden');
+        try { input.focus(); } catch (error) {}
+
+        function digitsOf(value) {
+          return String(value || '').split('').filter(ch => ch >= '0' && ch <= '9').join('');
+        }
+        function finish(value) {
+          row.classList.add('hidden');
+          submit.removeEventListener('pointerup', onSubmit);
+          cancel.removeEventListener('pointerup', onCancel);
+          input.removeEventListener('keydown', onKey);
+          resolve(value);
+        }
+        function onSubmit(event) {
+          if (event) event.preventDefault();
+          const digits = digitsOf(input.value);
+          if (digits.length < 4) {
+            errorBox.textContent = 'Enter the numeric code from the text message.';
+            errorBox.classList.remove('hidden');
+            try { input.focus(); } catch (error) {}
+            return;
+          }
+          finish(digits);
+        }
+        function onCancel(event) {
+          if (event) event.preventDefault();
+          finish(null);
+        }
+        function onKey(event) {
+          if (event.key === 'Enter') onSubmit(event);
+        }
+        submit.addEventListener('pointerup', onSubmit);
+        cancel.addEventListener('pointerup', onCancel);
+        input.addEventListener('keydown', onKey);
+      });
+    }
+
+    async function reauthBlink() {
+      if (!window.confirm('Re-authenticate Blink? An SMS code will be texted to you and Home Assistant will restart at the end.')) return;
+      reauthInFlight = true;
+      setReauthStatus(reauthStepText.starting);
+      let out;
+      try {
+        out = await (await fetch('/cameras/blink-reauth/start', { method: 'POST' })).json();
+      } catch (error) {
+        setReauthStatus('Failed to start');
+        reauthInFlight = false;
+        return;
+      }
+      if (!out.ok) {
+        setReauthStatus(out.error || 'Failed to start');
+        reauthInFlight = false;
+        return;
+      }
+      const code = await askForCode(out.phone);
+      if (code === null) {
+        await fetch('/cameras/blink-reauth/cancel', { method: 'POST' }).catch(() => {});
+        setReauthStatus(reauthStepText.cancelled);
+        reauthInFlight = false;
+        return;
+      }
+      setReauthStatus(reauthStepText.verifying);
+      try {
+        const verify = await (await fetch('/cameras/blink-reauth/verify', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ code })
+        })).json();
+        if (!verify.ok) {
+          setReauthStatus(verify.error || 'Verify failed');
+          await fetch('/cameras/blink-reauth/cancel', { method: 'POST' }).catch(() => {});
+          reauthInFlight = false;
+          return;
+        }
+      } catch (error) {
+        setReauthStatus('Verify request failed');
+        reauthInFlight = false;
+        return;
+      }
+      watchReauth();
+    }
+
+    document.getElementById('blinkReauthButton').addEventListener('pointerup', event => {
+      reauthBlink();
+      event.preventDefault();
+    });
+
+    document.getElementById('restartProxyButton').addEventListener('pointerup', async event => {
+      event.preventDefault();
+      const button = document.getElementById('restartProxyButton');
+      if (button.disabled) return;
+      button.disabled = true;
+      const original = button.textContent;
+      button.textContent = 'Restarting...';
+      try {
+        const result = await (await fetch('/cameras/blink-proxy-restart', { method: 'POST' })).json();
+        button.textContent = result.ok ? 'Restarted' : 'Restart failed';
+      } catch (error) {
+        button.textContent = 'Restart failed';
+      }
+      loadTokenStatus();
+      setTimeout(() => {
+        button.textContent = original;
+        button.disabled = false;
+      }, 2000);
+    });
+
+    document.getElementById('reloadBlinkButton').addEventListener('pointerup', async event => {
+      event.preventDefault();
+      const button = document.getElementById('reloadBlinkButton');
+      if (button.disabled) return;
+      button.disabled = true;
+      const original = button.textContent;
+      button.textContent = 'Reloading...';
+      try {
+        await reloadBlink(true);
+        await refreshState();
+        button.textContent = 'Reloaded';
+      } catch (error) {
+        button.textContent = 'Reload failed';
+      }
+      loadTokenStatus();
+      setTimeout(() => {
+        button.textContent = original;
+        button.disabled = false;
+      }, 2000);
+    });
+
+    const tokenModal = document.getElementById('tokenModal');
+
+    function fmtDuration(seconds) {
+      if (!Number.isFinite(seconds)) return '--';
+      const sign = seconds < 0 ? '-' : '';
+      const total = Math.abs(Math.round(seconds));
+      const hours = Math.floor(total / 3600);
+      const minutes = Math.floor((total % 3600) / 60);
+      return sign + (hours > 0 ? hours + 'h ' + minutes + 'm' : minutes + 'm');
+    }
+
+    function fmtAgo(epochSeconds) {
+      if (!epochSeconds) return 'never';
+      const diff = Date.now() / 1000 - epochSeconds;
+      if (diff < 60) return 'just now';
+      if (diff < 3600) return Math.round(diff / 60) + ' min ago';
+      return Math.round(diff / 3600) + ' hr ago';
+    }
+
+    function proxyIsUnhealthy(proxy) {
+      if (!proxy.ok || proxy.ready === false) return true;
+      if (Number.isFinite(proxy.token_seconds_remaining) && proxy.token_seconds_remaining <= 0) return true;
+      if ((proxy.watchdog_attempts || 0) >= 3) return true;
+      return false;
+    }
+
+    function integrationIsUnhealthy(integration) {
+      return !integration.ok || integration.state !== 'loaded';
+    }
+
+    function updateStatusDots(proxy, integration) {
+      setAttr('proxyDot', 'fill', proxyIsUnhealthy(proxy) ? '#dc2626' : '#16a34a');
+      setAttr('integrationDot', 'fill', integrationIsUnhealthy(integration) ? '#dc2626' : '#16a34a');
+    }
+
+    const proxyRefreshOverlay = document.getElementById('proxyRefreshOverlay');
+    const proxyRefreshMessage = document.getElementById('proxyRefreshMessage');
+    let proxyAutoRestartChecked = false;
+
+    function showProxyRefreshOverlay(message) {
+      proxyRefreshMessage.textContent = message;
+      proxyRefreshOverlay.classList.remove('hidden');
+    }
+
+    function hideProxyRefreshOverlay() {
+      proxyRefreshOverlay.classList.add('hidden');
+    }
+
+    // Runs once per page load: if the proxy already looks stale on the first
+    // status fetch, ask the server to restart it (cooldown-gated there) and
+    // show a spinner overlay until that finishes, instead of leaving the
+    // family staring at broken snapshots until someone opens Blink Status
+    // and taps Restart Proxy by hand.
+    async function checkAutoRestartProxy(proxy) {
+      if (proxyAutoRestartChecked || !proxyIsUnhealthy(proxy)) return;
+      proxyAutoRestartChecked = true;
+      showProxyRefreshOverlay('Camera connection looks stale — reconnecting…');
+      let message = 'Reconnected.';
+      try {
+        const response = await fetch('/cameras/blink-proxy-auto-restart', { method: 'POST' });
+        const result = await response.json();
+        if (!result.stale) {
+          hideProxyRefreshOverlay();
+          return;
+        }
+        if (result.skipped) {
+          message = 'Still stale — a reconnect was already tried recently. Open Blink Status to retry now.';
+        } else if (!result.ok) {
+          message = 'Reconnect did not finish in time. Open Blink Status to retry.';
+        }
+      } catch (error) {
+        message = 'Could not reach the panel service to reconnect.';
+      }
+      proxyRefreshMessage.textContent = message;
+      await loadTokenStatus();
+      setTimeout(hideProxyRefreshOverlay, 2500);
+    }
+
+    proxyRefreshOverlay.addEventListener('pointerup', event => {
+      if (event.target === proxyRefreshOverlay) hideProxyRefreshOverlay();
+    });
+
+    function renderTokenStatus(data) {
+      const proxy = data.proxy || {};
+      const integration = data.integration || {};
+      const reauth = data.reauth || {};
+
+      const proxyRows = document.getElementById('proxyStatusRows');
+      const proxyUnreachableRow = document.getElementById('proxyUnreachableRow');
+      if (proxy.ok) {
+        proxyRows.classList.remove('hidden');
+        proxyUnreachableRow.classList.add('hidden');
+        setText('proxyExpires', fmtDuration(proxy.token_seconds_remaining));
+        setText('proxyCameras', proxy.cameras_discovered + ' / ' + proxy.cameras_configured + ' configured');
+        setText('proxyUptime', fmtDuration(proxy.process_uptime_seconds));
+        setText('proxyWatchdogAttempts', String(proxy.watchdog_attempts || 0));
+        setText('proxyWatchdogLast', fmtAgo(proxy.watchdog_last_restart));
+      } else {
+        proxyRows.classList.add('hidden');
+        proxyUnreachableRow.classList.remove('hidden');
+        setText('proxyError', 'Unreachable: ' + (proxy.error || 'unknown error'));
+      }
+
+      setText('integrationState', integration.ok ? integration.state : (integration.error || 'unknown error'));
+      const reasonRow = document.getElementById('integrationReasonRow');
+      if (integration.ok && integration.reason) {
+        reasonRow.classList.remove('hidden');
+        setText('integrationReason', integration.reason);
+      } else {
+        reasonRow.classList.add('hidden');
+      }
+
+      const reauthButton = document.getElementById('blinkReauthButton');
+      if (reauthInFlight) {
+        reauthButton.classList.add('hidden');
+      } else {
+        reauthButton.classList.toggle('hidden', !integrationIsUnhealthy(integration));
+        if (reauth.step && reauth.step !== 'idle' && reauth.step !== 'done' && reauth.step !== 'cancelled') {
+          setReauthStatus(reauthStepText[reauth.step] || reauth.step);
+        } else {
+          setReauthStatus('');
+        }
+      }
+
+      updateStatusDots(proxy, integration);
+      checkAutoRestartProxy(proxy);
+    }
+
+    async function loadTokenStatus() {
+      try {
+        const response = await fetch('/cameras/blink-token-status', { cache: 'no-store' });
+        renderTokenStatus(await response.json());
+      } catch (error) {
+        // Keep showing the last known status; dots simply won't update this tick.
+      }
+    }
+
+    function openTokenModal() {
+      tokenModal.classList.remove('hidden');
+      loadTokenStatus();
+    }
+
+    function closeTokenModal() {
+      tokenModal.classList.add('hidden');
+    }
+
+    document.getElementById('blinkStatusButton').addEventListener('pointerup', event => {
+      openTokenModal();
+      event.preventDefault();
+    });
+    document.getElementById('tokenModalClose').addEventListener('click', closeTokenModal);
+    tokenModal.addEventListener('pointerup', event => {
+      if (event.target === tokenModal) closeTokenModal();
+    });
+
+    loadTokenStatus();
+    setInterval(loadTokenStatus, 15000);`;
+}
+
 function cameraDashboardHtml(ib = '') {
   const cards = CAMERAS.map((camera, index) => {
     const col = index % 3;
@@ -2754,8 +3451,8 @@ function cameraDashboardHtml(ib = '') {
         <text x="18" y="36" class="label">${escapeHtml(camera.label)}</text>
         <text id="temp-${camera.slug}" x="198" y="36" text-anchor="middle" class="tiny">--</text>
         <text id="battery-${camera.slug}" x="374" y="36" text-anchor="end" class="tiny">Battery --</text>
-        <a href="/live/${camera.slug}">
-          <image id="image-${camera.slug}" href="/camera/${camera.slug}/snapshot.jpg" x="14" y="58" width="364" height="178" preserveAspectRatio="xMidYMid slice"/>
+        <a href="${ib}/live/${camera.slug}">
+          <image id="image-${camera.slug}" href="${ib}/camera/${camera.slug}/snapshot.jpg" x="14" y="58" width="364" height="178" preserveAspectRatio="xMidYMid slice"/>
           <rect x="14" y="58" width="364" height="178" rx="8" fill="transparent"/>
         </a>
         <rect x="14" y="58" width="364" height="178" rx="8" fill="none" stroke="rgba(255,255,255,0.12)"/>
@@ -2835,6 +3532,7 @@ function cameraDashboardHtml(ib = '') {
       opacity: 0.76;
     }
 
+${blinkOpsStyles()}
     /* Portrait phones: let the grid fill the width and scroll vertically
        instead of letterboxing. The reflow below stacks the cards. */
     @media (max-aspect-ratio: 1 / 1) {
@@ -2864,21 +3562,28 @@ function cameraDashboardHtml(ib = '') {
     <rect width="1280" height="800" fill="url(#bg)"/>
     <text x="24" y="44" fill="#fff" font-size="30" font-weight="900">Cameras</text>
     <text id="cameraStatus" x="24" y="70" class="small">Static HA snapshots</text>
-    <g class="button" id="blinkReloadButton" transform="translate(776 20)">
+${blinkOpsEnabled()
+      ? `    <g class="button" id="blinkStatusButton" transform="translate(608 20)">
+      <rect width="144" height="52" rx="8" fill="#0369a1"/>
+      <text x="72" y="38" text-anchor="middle" fill="#fff" font-size="17" font-weight="850">Blink Status</text>
+      <circle id="proxyDot" cx="122" cy="12" r="5" fill="#16a34a" stroke="#0369a1" stroke-width="1.5"/>
+      <circle id="integrationDot" cx="137" cy="12" r="5" fill="#16a34a" stroke="#0369a1" stroke-width="1.5"/>
+    </g>`
+      : `    <g class="button" id="blinkReloadButton" transform="translate(776 20)">
       <rect width="144" height="52" rx="8" fill="#4f46e5"/>
       <text x="72" y="34" text-anchor="middle" fill="#fff" font-size="17" font-weight="850">Reload Blink</text>
-    </g>
-    <g class="button" id="micTestButton" transform="translate(944 20)">
+    </g>`}
+    <g class="button" id="micTestButton" transform="translate(${blinkOpsEnabled() ? 776 : 944} 20)">
       <rect width="144" height="52" rx="8" fill="#0f766e"/>
-      <text x="72" y="34" text-anchor="middle" fill="#fff" font-size="18" font-weight="850">Panel Admin</text>
+      <text x="72" y="34" text-anchor="middle" fill="#fff" font-size="16" font-weight="850">Panel Admin</text>
     </g>
-    <g class="button" id="backButton" transform="translate(1112 20)">
+    <g class="button" id="backButton" transform="translate(${blinkOpsEnabled() ? 944 : 1112} 20)">
       <rect width="144" height="52" rx="8" fill="#334155"/>
       <text x="72" y="34" text-anchor="middle" fill="#fff" font-size="18" font-weight="850">Climate</text>
     </g>
     ${cards}
   </svg>
-
+${blinkOpsMarkup()}
   <script>
     const slugs = ${JSON.stringify(CAMERAS.map(camera => camera.slug))};
     let autoBlinkReloadAttempted = false;
@@ -3059,10 +3764,15 @@ function cameraDashboardHtml(ib = '') {
       event.preventDefault();
     });
 
-    document.getElementById('blinkReloadButton').addEventListener('pointerup', event => {
-      reloadBlink(true).then(refreshState).catch(() => setText('cameraStatus', 'Blink reload failed'));
-      event.preventDefault();
-    });
+    const headerReloadButton = document.getElementById('blinkReloadButton');
+    if (headerReloadButton) {
+      headerReloadButton.addEventListener('pointerup', event => {
+        reloadBlink(true).then(refreshState).catch(() => setText('cameraStatus', 'Blink reload failed'));
+        event.preventDefault();
+      });
+    }
+
+${blinkOpsScript()}
 
     // Portrait: single full-width column of cameras; landscape unchanged.
     (function () {
@@ -4666,7 +5376,7 @@ function plainTestHtml(ib = '') {
 <body style="margin:0;background:#102030;color:white;font:24px Arial;padding:28px">
   <h1 style="margin-top:0">Panel Plain Test</h1>
   <p>If you can read this in Fully Kiosk over HTTPS, TLS and basic rendering work.</p>
-  <p><a style="color:#7dd3fc" href="/cameras">Open cameras</a></p>
+  <p><a style="color:#7dd3fc" href="${ib}/cameras">Open cameras</a></p>
   <p id="js">JavaScript not checked yet.</p>
   <script>
     document.getElementById('js').textContent = 'JavaScript works. Secure context: ' + window.isSecureContext;
@@ -5202,7 +5912,7 @@ function clipsHtml(slug, ib = '') {
           row.className = 'clip';
           row.innerHTML =
             '<div><div class="name">' + label(clip, index) + '</div><div class="meta">' + meta(clip) + '</div></div>' +
-            '<a class="watch" href="/clip/${encodeURIComponent(slug)}/' + id + '.mp4">Watch</a>';
+            '<a class="watch" href="${ib}/clip/${encodeURIComponent(slug)}/' + id + '.mp4">Watch</a>';
           root.appendChild(row);
         });
       } catch (error) {
@@ -5275,6 +5985,89 @@ const server = http.createServer(async (req, res) => {
       await pollStates();
       sendJson(res, 200, camerasState());
       return;
+    }
+
+    if (blinkOpsEnabled() && url.pathname.startsWith('/cameras/blink-')) {
+      if (req.method === 'POST' && url.pathname === '/cameras/blink-reauth/start') {
+        const since = Date.now() / 1000;
+        try {
+          blinkReauthRequest('start');
+        } catch (error) {
+          sendJson(res, 200, { ok: false, error: error.message });
+          return;
+        }
+        const status = await blinkReauthWait(['awaiting_code', 'error'], since, 60000);
+        if (status.step === 'awaiting_code') {
+          sendJson(res, 200, { ok: true, phone: status.phone || '' });
+        } else {
+          sendJson(res, 200, { ok: false, error: status.error || 'start timed out' });
+        }
+        return;
+      }
+
+      if (req.method === 'POST' && url.pathname === '/cameras/blink-reauth/verify') {
+        const payload = await readJson(req).catch(() => ({}));
+        const code = String(payload.code || '').trim();
+        if (!/^[0-9]{4,8}$/.test(code)) {
+          sendJson(res, 400, { ok: false, error: 'invalid code' });
+          return;
+        }
+        // Verify restarts Home Assistant and takes minutes; the client follows
+        // /cameras/blink-reauth/status for progress.
+        try {
+          blinkReauthRequest('verify', { code });
+        } catch (error) {
+          sendJson(res, 200, { ok: false, error: error.message });
+          return;
+        }
+        sendJson(res, 200, { ok: true });
+        return;
+      }
+
+      if (req.method === 'POST' && url.pathname === '/cameras/blink-reauth/cancel') {
+        const since = Date.now() / 1000;
+        try {
+          blinkReauthRequest('cancel');
+        } catch (error) {
+          sendJson(res, 200, { ok: false, error: error.message });
+          return;
+        }
+        const status = await blinkReauthWait(['cancelled'], since, 30000);
+        sendJson(res, 200, { ok: status.step === 'cancelled' });
+        return;
+      }
+
+      if (req.method === 'GET' && url.pathname === '/cameras/blink-reauth/status') {
+        sendJson(res, 200, blinkReauthStatus());
+        return;
+      }
+
+      if (req.method === 'GET' && url.pathname === '/cameras/blink-token-status') {
+        const [proxy, integration] = await Promise.all([
+          blinkProxyStatus(),
+          haBlinkIntegrationStatus()
+        ]);
+        sendJson(res, 200, { proxy, integration, reauth: blinkReauthStatus() });
+        return;
+      }
+
+      if (req.method === 'POST' && url.pathname === '/cameras/blink-proxy-restart') {
+        try {
+          sendJson(res, 200, await restartBlinkProxyAndWait(30000));
+        } catch (error) {
+          sendJson(res, 200, { ok: false, error: error.message });
+        }
+        return;
+      }
+
+      if (req.method === 'POST' && url.pathname === '/cameras/blink-proxy-auto-restart') {
+        try {
+          sendJson(res, 200, await autoRestartBlinkProxyIfStale());
+        } catch (error) {
+          sendJson(res, 200, { stale: true, restarted: false, error: error.message });
+        }
+        return;
+      }
     }
 
     if (req.method === 'POST' && url.pathname === '/cameras/reload-blink') {
@@ -5474,3 +6267,33 @@ server.listen(PORT, HOST, () => {
 pollStates(true).catch(error => {
   console.error(`Initial HA poll failed: ${error.message}`);
 });
+
+// Server-side self-heal. The "stuck Blink" reload used to run only while the
+// /cameras page was open in a browser, so the fix landed only when someone
+// happened to visit that page. On a timer it runs regardless. Only logs when
+// the outcome changes, so a long-lived skip states itself once instead of
+// every tick. Disabled unless blinkOps.watchdogMs is set.
+let lastBlinkWatchdogReason = '';
+
+function blinkWatchdogTick() {
+  reloadBlinkIntegration().then(result => {
+    const reason = result.reason || '';
+    if (reason === lastBlinkWatchdogReason) return;
+    lastBlinkWatchdogReason = reason;
+    if (reason === 'integration_not_loaded') {
+      console.warn(`Blink watchdog: integration is ${result.integrationState || 'not loaded'}; skipping reload (a reload cannot fix credentials \u2014 use Re-auth Blink)`);
+    } else if (reason === 'circuit_breaker') {
+      console.warn(`Blink watchdog: ${result.consecutiveReloads} consecutive reloads did not restore the cameras; pausing until they recover`);
+    } else if (reason === 'reloaded') {
+      console.log(`Blink watchdog: reloaded Blink integration (recovered=${result.recovered})`);
+    }
+  }).catch(error => {
+    console.error(`Blink watchdog reload failed: ${error.message}`);
+  });
+}
+
+if (BLINK_WATCHDOG_MS > 0) {
+  console.log(`Blink watchdog: enabled, checking every ${Math.round(BLINK_WATCHDOG_MS / 1000)}s`);
+  blinkWatchdogTick();
+  setInterval(blinkWatchdogTick, BLINK_WATCHDOG_MS);
+}

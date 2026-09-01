@@ -1,0 +1,8 @@
+[Unit]
+Description=Restart the Blink live-view proxy on request from HA Light Panel
+After=blink-liveview-proxy.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'rm -f /var/spool/blink-liveview-proxy-restart/request; systemctl restart blink-liveview-proxy.service'
+TimeoutStartSec=60
