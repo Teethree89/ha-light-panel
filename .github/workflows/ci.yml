@@ -14,14 +14,10 @@ jobs:
         with:
           node-version: "20"
       - run: node --check server.js
+      - run: node --check addon/server.js
       - run: node scripts/validate-config.js examples/frameo-climate.json
       - run: node scripts/validate-config.js examples/starter.json
       - name: Verify addon/server.js is in sync
-        run: |
-          if ! diff -q server.js addon/server.js > /dev/null 2>&1; then
-            echo "addon/server.js is out of sync with server.js. Run: cp server.js addon/server.js"
-            diff server.js addon/server.js
-            exit 1
-          fi
+        run: node scripts/sync-addon.js --check
       - name: Verify the add-on repository structure
         run: node scripts/validate-addon-repo.js

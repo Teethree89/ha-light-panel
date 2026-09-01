@@ -117,7 +117,14 @@ const STATES = [
     sensor(`switch.${slug}_camera_motion_detection`, 'on'),
     sensor(`switch.${slug}_motion_detection`, 'on'),
     sensor(`sensor.${slug}_temperature`, 64)
-  ])
+  ]),
+
+  // Backs the optional /hvac-settings page.
+  sensor('input_boolean.humidity_biased_cooling_enabled', 'on'),
+  sensor('input_select.seasonal_mode', 'Summer', {
+    options: ['Winter', 'Summer']
+  }),
+  sensor('binary_sensor.furnace_outdoor_guard_active', 'on')
 ];
 
 // Stand-in camera image, so snapshot tiles are not broken images.

@@ -87,6 +87,43 @@
         "data": {}
       }
     },
+    "settings": {
+      "title": "HVAC Settings",
+      "humidityCooling": {
+        "entity": "input_boolean.humidity_biased_cooling_enabled",
+        "label": "Humidity-Biased Cooling",
+        "hint": "When indoor humidity is above the max humidity setting, this lowers the mini split's cooling target a few degrees so it keeps condensing water instead of just cooling dry air. Turning it off leaves cooling at the plain comfort target regardless of humidity."
+      },
+      "seasonalMode": {
+        "entity": "input_select.seasonal_mode",
+        "furnaceGuard": "binary_sensor.furnace_outdoor_guard_active",
+        "label": "Seasonal Mode",
+        "hint": "Switching modes means physically reconfiguring the registers, their covers, the furnace, and the fresh air intake. Tapping the mode you are not in shows the checklist before anything changes.",
+        "options": [
+          {
+            "value": "Winter",
+            "label": "Winter Mode",
+            "icon": "\u2744\ufe0f",
+            "title": "Switch to Winter Mode?",
+            "confirmLabel": "I Understand \u2014 Switch to Winter",
+            "steps": ["Open all supply registers.", "Open the fresh air intake."]
+          },
+          {
+            "value": "Summer",
+            "label": "Summer Mode",
+            "icon": "\u2600\ufe0f",
+            "title": "Switch to Summer Mode?",
+            "confirmLabel": "I Understand \u2014 Switch to Summer",
+            "steps": [
+              "Close all supply registers.",
+              "Put the register covers on.",
+              "Open the furnace.",
+              "Close the fresh air intake."
+            ]
+          }
+        ]
+      }
+    },
     "statusPanel": {
       "label": "Status",
       "heart": "sensor.status_heart_rate",

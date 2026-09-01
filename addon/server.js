@@ -80,6 +80,46 @@ const DEFAULT_CONFIG = {
       assist: { service: 'script.hybrid_hvac_start_airflow_assist_now', data: {} },
       silenceAlarm: { service: 'script.family_safety_hush_active_smoke_alarms', data: {} }
     },
+    // Optional /hvac-settings page, reached from the Settings button. Drop the
+    // whole block (or blank out the entities) and the button and the route
+    // both disappear.
+    settings: {
+      title: 'HVAC Settings',
+      humidityCooling: {
+        entity: 'input_boolean.hybrid_hvac_humidity_biased_cooling_enabled',
+        label: 'Humidity-Biased Cooling',
+        hint: 'When indoor humidity is above the max humidity setting, this lowers the mini split\'s cooling target a few degrees so it keeps condensing water instead of just cooling dry air. Turning it off leaves cooling at the plain comfort target regardless of humidity.'
+      },
+      seasonalMode: {
+        entity: 'input_select.hybrid_hvac_seasonal_mode',
+        furnaceGuard: 'binary_sensor.hybrid_hvac_furnace_outdoor_guard_active',
+        label: 'Seasonal Mode',
+        hint: 'Switching modes means physically reconfiguring the registers, their covers, the furnace, and the fresh air intake. Tapping the mode you are not in shows the checklist before anything changes. Summer Mode also holds the furnace back automatically, regardless of outdoor temperature, since the registers and fresh air intake are covered; Winter Mode leaves the furnace fully available.',
+        options: [
+          {
+            value: 'Winter',
+            label: 'Winter Mode',
+            icon: '\u2744\ufe0f',
+            title: 'Switch to Winter Mode?',
+            confirmLabel: 'I Understand \u2014 Switch to Winter',
+            steps: ['Open all supply registers.', 'Open the fresh air intake.']
+          },
+          {
+            value: 'Summer',
+            label: 'Summer Mode',
+            icon: '\u2600\ufe0f',
+            title: 'Switch to Summer Mode?',
+            confirmLabel: 'I Understand \u2014 Switch to Summer',
+            steps: [
+              'Close all supply registers.',
+              'Put the register covers on.',
+              'Open the furnace.',
+              'Close the fresh air intake.'
+            ]
+          }
+        ]
+      }
+    },
     statusPanel: {
       label: 'Status',
       heart: 'sensor.renni_s_smart_sock_heart_rate',
@@ -335,6 +375,7 @@ const DEPLOYMENT_SECTIONS = [
   ['panel', 'comfort'],
   ['panel', 'balance'],
   ['panel', 'actions'],
+  ['panel', 'settings'],
   ['panel', 'thermostats'],
   ['panel', 'statusPanel'],
   ['panel', 'safetyPanel'],
@@ -1125,7 +1166,24 @@ function dashboardState() {
     balance: balanceAvailability(),
     alarmPanel: alarmPanelSummary(),
     rooms,
-    sock: status
+    sock: status,
+    settings: settingsSummary()
+  };
+}
+
+// Backs the optional /hvac-settings page. Every field is null when the
+// matching entity is not configured, and the page hides that control.
+function settingsSummary() {
+  const settings = PANEL.settings || {};
+  const humidity = settings.humidityCooling || {};
+  const season = settings.seasonalMode || {};
+  const options = (Array.isArray(season.options) ? season.options : []).map(option => option.value);
+  const current = season.entity ? state(season.entity, '') : '';
+
+  return {
+    humidityCoolingEnabled: humidity.entity ? isOn(humidity.entity) : null,
+    seasonalMode: options.includes(current) ? current : (options[0] || ''),
+    furnaceGuardActive: season.furnaceGuard ? isOn(season.furnaceGuard) : null
   };
 }
 
@@ -1287,6 +1345,29 @@ async function callAction(name, options = {}) {
     return;
   }
 
+  if (name === 'humidityCoolingToggle') {
+    const entity = (PANEL.settings || {}).humidityCooling?.entity;
+    if (!entity) throw new Error('No humidity-biased cooling entity is configured.');
+    await haFetch('/api/services/input_boolean/toggle', {
+      method: 'POST',
+      body: JSON.stringify({ entity_id: entity })
+    });
+    return;
+  }
+
+  if (name === 'seasonModeSet') {
+    const season = (PANEL.settings || {}).seasonalMode || {};
+    if (!season.entity) throw new Error('No seasonal mode entity is configured.');
+    const allowed = (Array.isArray(season.options) ? season.options : []).map(option => option.value);
+    const mode = String(options.mode || '');
+    if (!allowed.includes(mode)) throw new Error(`Invalid seasonal mode: ${mode}`);
+    await haFetch('/api/services/input_select/select_option', {
+      method: 'POST',
+      body: JSON.stringify({ entity_id: season.entity, option: mode })
+    });
+    return;
+  }
+
   if (name === 'reset' || name === 'assist' || name === 'silenceAlarm') {
     if (!actions[name]?.service) throw new Error(`No ${name} action is configured.`);
     await callConfiguredService(actions[name]);
@@ -1441,13 +1522,97 @@ function sendJson(res, status, body) {
   }, JSON.stringify(body));
 }
 
-function clientHtml() {
+// When the panel is reached through a reverse proxy that mounts it under a
+// path prefix -- the bundled `ha_light_panel` Home Assistant integration does
+// this so Nabu Casa can tunnel the panel -- the proxy forwards an
+// `X-Ingress-Path` header naming the prefix the browser sees (e.g.
+// `/api/ha_light_panel`). This script makes every client-side `fetch`/XHR
+// absolute under that prefix, so one relative dashboard link works both on the
+// LAN and remotely. Paths under `/api/blink_liveview_proxy/` are left at the
+// origin root, because Home Assistant core serves those views itself. Reached
+// directly on the LAN there is no header, the base is empty, and behaviour is
+// unchanged.
+function ingressHeadScript(ib) {
+  return `<script>
+(function () {
+  window.IB = ${JSON.stringify(ib || '')};
+  var IB = window.IB;
+  if (!IB) return;
+  function abs(u) {
+    if (typeof u !== 'string' || !u) return u;
+    if (u.charAt(0) !== '/' || u.charAt(1) === '/') return u;
+    if (u.indexOf('/api/blink_liveview_proxy/') === 0) return u;
+    if (u === IB || u.indexOf(IB + '/') === 0) return u;
+    return IB + u;
+  }
+  var nativeFetch = window.fetch;
+  if (nativeFetch) {
+    window.fetch = function (input, init) {
+      return typeof input === 'string'
+        ? nativeFetch.call(this, abs(input), init)
+        : nativeFetch.call(this, input, init);
+    };
+  }
+  var nativeOpen = XMLHttpRequest.prototype.open;
+  XMLHttpRequest.prototype.open = function (method, url) {
+    if (typeof url === 'string') arguments[1] = abs(url);
+    return nativeOpen.apply(this, arguments);
+  };
+})();
+</script>`;
+}
+
+// The bottom-left nav row. With the settings page configured this splits into
+// Cameras + Settings; without it, Cameras keeps the full width it had before
+// the settings page existed.
+function navButtonsMarkup() {
+  const cameraIcon = `        <g transform="translate(${'${iconX}'} 17)">
+          <rect width="44" height="36" fill="transparent"/>
+          <g transform="translate(7 5)">
+          <rect x="0" y="4" width="30" height="22" rx="5" fill="none" stroke="#fff" stroke-width="3"/>
+          <path d="M9 4 L13 0 H22 L26 4" fill="none" stroke="#fff" stroke-width="3" stroke-linejoin="round"/>
+          <circle cx="15" cy="15" r="5" fill="none" stroke="#fff" stroke-width="3"/>
+          </g>
+        </g>`;
+
+  if (!settingsPageEnabled()) {
+    return `      <g class="button" id="camerasButton" transform="translate(28 532)">
+        <rect width="376" height="70" rx="8" fill="#0f766e"/>
+${cameraIcon.replace('${iconX}', '112')}
+        <rect x="166" y="16" width="108" height="42" fill="transparent"/>
+        <text x="220" y="43" text-anchor="middle" fill="#fff" font-size="25" font-weight="850">Cameras</text>
+      </g>`;
+  }
+
+  return `      <g class="button" id="camerasButton" transform="translate(28 532)">
+        <rect width="180" height="70" rx="8" fill="#0f766e"/>
+${cameraIcon.replace('${iconX}', '18')}
+        <rect x="62" y="16" width="106" height="42" fill="transparent"/>
+        <text x="112" y="43" text-anchor="middle" fill="#fff" font-size="20" font-weight="850">Cameras</text>
+      </g>
+
+      <g class="button" id="settingsButton" transform="translate(224 532)">
+        <rect width="180" height="70" rx="8" fill="#334155"/>
+        <g transform="translate(18 17)">
+          <rect width="36" height="36" fill="transparent"/>
+          <circle cx="18" cy="18" r="7" fill="none" stroke="#fff" stroke-width="3"/>
+          <path fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round"
+            d="M18 4 L18 8 M18 28 L18 32 M4 18 L8 18 M28 18 L32 18
+               M7.8 7.8 L10.6 10.6 M25.4 25.4 L28.2 28.2 M7.8 28.2 L10.6 25.4 M25.4 10.6 L28.2 7.8"/>
+        </g>
+        <rect x="62" y="16" width="106" height="42" fill="transparent"/>
+        <text x="112" y="43" text-anchor="middle" fill="#fff" font-size="20" font-weight="850">Settings</text>
+      </g>`;
+}
+
+function clientHtml(ib = '') {
   return `<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
   <title>${escapeHtml(PANEL.title || 'Frameo Climate')}</title>
+  ${ingressHeadScript(ib)}
   <style>
     html,
     body {
@@ -1940,19 +2105,7 @@ function clientHtml() {
         <text id="sockSignal" x="300" y="32" text-anchor="start" class="tiny">--</text>
       </g>
 
-      <g class="button" id="camerasButton" transform="translate(28 532)">
-        <rect width="376" height="70" rx="8" fill="#0f766e"/>
-        <g transform="translate(112 17)">
-          <rect width="44" height="36" fill="transparent"/>
-          <g transform="translate(7 5)">
-          <rect x="0" y="4" width="30" height="22" rx="5" fill="none" stroke="#fff" stroke-width="3"/>
-          <path d="M9 4 L13 0 H22 L26 4" fill="none" stroke="#fff" stroke-width="3" stroke-linejoin="round"/>
-          <circle cx="15" cy="15" r="5" fill="none" stroke="#fff" stroke-width="3"/>
-          </g>
-        </g>
-        <rect x="166" y="16" width="108" height="42" fill="transparent"/>
-        <text x="220" y="43" text-anchor="middle" fill="#fff" font-size="25" font-weight="850">Cameras</text>
-      </g>
+${navButtonsMarkup()}
     </g>
 
     <text id="connection" x="1254" y="792" text-anchor="end" class="tiny">connecting</text>
@@ -2393,9 +2546,17 @@ function clientHtml() {
     });
 
     els.camerasButton.addEventListener('pointerup', event => {
-      window.location.href = '/cameras';
+      window.location.href = (window.IB || '') + '/cameras';
       event.preventDefault();
     });
+
+    const settingsButton = document.getElementById('settingsButton');
+    if (settingsButton) {
+      settingsButton.addEventListener('pointerup', event => {
+        window.location.href = (window.IB || '') + '/hvac-settings';
+        event.preventDefault();
+      });
+    }
 
     // Responsive layout: landscape (the frame/desktop/tablet) keeps the native
     // 1280x800 design untouched; portrait phones get a tall, single-column
@@ -2581,7 +2742,7 @@ function frameoDeviceBootstrapScript() {
   </script>`;
 }
 
-function cameraDashboardHtml() {
+function cameraDashboardHtml(ib = '') {
   const cards = CAMERAS.map((camera, index) => {
     const col = index % 3;
     const row = Math.floor(index / 3);
@@ -2629,6 +2790,7 @@ function cameraDashboardHtml() {
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
   <title>${escapeHtml(CAMERA_PANEL.title || 'Frameo Cameras')}</title>
+  ${ingressHeadScript(ib)}
   <style>
     html, body {
       width: 100%;
@@ -2882,18 +3044,18 @@ function cameraDashboardHtml() {
         const action = node.dataset.cameraAction;
         if (action === 'snapshot') refreshSnapshot(slug).catch(() => setText('cameraStatus', 'snapshot failed'));
         if (action === 'motion') toggleMotion(slug).catch(() => setText('cameraStatus', 'motion failed'));
-        if (action === 'clips') window.location.href = '/clips/' + slug;
+        if (action === 'clips') window.location.href = (window.IB || '') + '/clips/' + slug;
         event.preventDefault();
       });
     });
 
     document.getElementById('backButton').addEventListener('pointerup', event => {
-      window.location.href = '/';
+      window.location.href = (window.IB || '') + '/';
       event.preventDefault();
     });
 
     document.getElementById('micTestButton').addEventListener('pointerup', event => {
-      window.location.href = '/mic-test';
+      window.location.href = (window.IB || '') + '/mic-test';
       event.preventDefault();
     });
 
@@ -2948,7 +3110,7 @@ ${frameoDeviceBootstrapScript()}
 </html>`;
 }
 
-function liveHtml(slug) {
+function liveHtml(slug, ib = '') {
   const camera = cameraConfig(slug);
   if (!camera) return null;
   const token = String(attr(camera.liveEntity, 'access_token', ''));
@@ -2959,6 +3121,7 @@ function liveHtml(slug) {
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
   <title>${escapeHtml(camera.label)} Live</title>
+  ${ingressHeadScript(ib)}
   <style>
     html, body {
       width: 100%;
@@ -3633,7 +3796,7 @@ function liveHtml(slug) {
 
     back.addEventListener('pointerup', event => {
       event.preventDefault();
-      window.location.href = '/cameras';
+      window.location.href = (window.IB || '') + '/cameras';
     });
 
     restart.addEventListener('pointerup', event => {
@@ -3655,7 +3818,7 @@ function liveHtml(slug) {
 
     clips.addEventListener('pointerup', event => {
       event.preventDefault();
-      window.location.href = '/clips/' + encodeURIComponent(slug);
+      window.location.href = (window.IB || '') + '/clips/' + encodeURIComponent(slug);
     });
 
     audio.addEventListener('pointerup', async event => {
@@ -3686,13 +3849,14 @@ ${frameoDeviceBootstrapScript()}
 </html>`;
 }
 
-function micTestHtml() {
+function micTestHtml(ib = '') {
   return `<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
   <title>Panel Admin</title>
+  ${ingressHeadScript(ib)}
   <style>
     html, body {
       margin: 0;
@@ -3968,7 +4132,7 @@ function micTestHtml() {
 <body>
   <main>
     <div class="page-header">
-      <button class="back" type="button" onclick="history.length > 1 ? history.back() : (window.location.href = '/')">&#8592; Back</button>
+      <button class="back" type="button" onclick="history.length > 1 ? history.back() : (window.location.href = (window.IB || '') + '/')">&#8592; Back</button>
       <h1>Panel Admin</h1>
     </div>
 
@@ -4490,13 +4654,14 @@ ${frameoDeviceBootstrapScript()}
 </html>`;
 }
 
-function plainTestHtml() {
+function plainTestHtml(ib = '') {
   return `<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Panel Plain Test</title>
+  ${ingressHeadScript(ib)}
 </head>
 <body style="margin:0;background:#102030;color:white;font:24px Arial;padding:28px">
   <h1 style="margin-top:0">Panel Plain Test</h1>
@@ -4511,7 +4676,412 @@ ${frameoDeviceBootstrapScript()}
 </html>`;
 }
 
-function clipsHtml(slug) {
+// Optional settings page, mounted at /hvac-settings and reached from the
+// Settings button on the main panel. Everything on it is driven by
+// `panel.settings` in the config: leave that block out (or leave its entities
+// blank) and the button disappears, the route 404s, and nothing else changes.
+// True when at least one control on the settings page has an entity behind it.
+function settingsPageEnabled() {
+  const settings = PANEL.settings || {};
+  const humidity = (settings.humidityCooling || {}).entity;
+  const season = settings.seasonalMode || {};
+  const seasonReady = Boolean(season.entity) && Array.isArray(season.options) && season.options.length > 0;
+  return Boolean(humidity) || seasonReady;
+}
+
+function hvacSettingsHtml(ib = '') {
+  const settings = PANEL.settings || {};
+  const title = settings.title || 'HVAC Settings';
+
+  const humidity = settings.humidityCooling || {};
+  const humidityRow = humidity.entity
+    ? `
+    <div class="row">
+      <div class="label">${escapeHtml(humidity.label || 'Humidity-Biased Cooling')}</div>
+      <p class="hint">${escapeHtml(humidity.hint || '')}</p>
+      <div class="toggle-row">
+        <button id="humidityToggle" class="toggle-switch" type="button" role="switch" aria-checked="false">
+          <span class="toggle-knob"></span>
+        </button>
+        <span id="humidityStatus" class="toggle-status">--</span>
+      </div>
+    </div>
+`
+    : '';
+
+  const season = settings.seasonalMode || {};
+  const seasonOptions = Array.isArray(season.options) ? season.options : [];
+  const seasonRow = season.entity && seasonOptions.length
+    ? `
+    <div class="row">
+      <div class="label">${escapeHtml(season.label || 'Seasonal Mode')}</div>
+      <p class="hint">${escapeHtml(season.hint || '')}</p>
+      <div id="seasonStatus" class="season-status">Current mode: --</div>
+      <div id="furnaceGuardStatus" class="season-status" style="margin-top:-8px"></div>
+      <div class="season-grid">
+${seasonOptions.map(option => `        <button class="season-card" type="button" data-mode="${escapeHtml(option.value)}">
+          <span class="season-icon">${escapeHtml(option.icon || '')}</span>
+          <span class="season-name">${escapeHtml(option.label || option.value)}</span>
+          <span class="season-tag" style="visibility:hidden">Active</span>
+        </button>`).join('\n')}
+      </div>
+    </div>
+`
+    : '';
+
+  const checklists = {};
+  for (const option of seasonOptions) {
+    checklists[option.value] = {
+      title: option.title || `Switch to ${option.label || option.value}?`,
+      intro: option.intro || 'Before switching, go around the house and:',
+      confirmLabel: option.confirmLabel || 'I Understand',
+      steps: Array.isArray(option.steps) ? option.steps : []
+    };
+  }
+  const fallbackSeason = seasonOptions.length ? seasonOptions[0].value : '';
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+  <title>${escapeHtml(title)}</title>
+  ${ingressHeadScript(ib)}
+  <style>
+    html, body {
+      margin: 0;
+      min-height: 100%;
+      background: #071017;
+      color: #f8fafc;
+      font-family: Inter, Roboto, Arial, sans-serif;
+    }
+    main {
+      width: min(900px, calc(100vw - 32px));
+      margin: 0 auto;
+      padding: 20px 16px 40px;
+    }
+    .page-header {
+      display: flex;
+      align-items: center;
+      margin-bottom: 24px;
+    }
+    .page-header button {
+      margin-right: 16px;
+    }
+    h1 {
+      margin: 0;
+      font-size: 30px;
+    }
+    button.back {
+      display: inline-block;
+      border: 0;
+      border-radius: 8px;
+      background: rgba(255,255,255,0.08);
+      color: #fff;
+      font-size: 15px;
+      font-weight: 900;
+      padding: 13px 20px;
+      cursor: pointer;
+    }
+    .row {
+      padding: 20px;
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 12px;
+      background: #0f1d29;
+      margin-bottom: 20px;
+    }
+    .label {
+      font-size: 18px;
+      font-weight: 850;
+      margin-bottom: 6px;
+    }
+    .hint {
+      color: rgba(248,250,252,0.62);
+      font-size: 14px;
+      line-height: 1.5;
+      margin: 0 0 16px;
+    }
+    .toggle-row {
+      display: flex;
+      align-items: center;
+    }
+    .toggle-switch {
+      width: 64px;
+      height: 36px;
+      border-radius: 18px;
+      border: 0;
+      padding: 3px;
+      background: #334155;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      transition: background 0.15s ease;
+      flex-shrink: 0;
+    }
+    .toggle-switch.on {
+      background: #0f766e;
+      justify-content: flex-end;
+    }
+    .toggle-knob {
+      width: 30px;
+      height: 30px;
+      border-radius: 50%;
+      background: #fff;
+      display: block;
+    }
+    .toggle-status {
+      margin-left: 14px;
+      font-size: 16px;
+      font-weight: 800;
+    }
+    .season-status {
+      font-size: 15px;
+      font-weight: 800;
+      color: rgba(248,250,252,0.72);
+      margin-bottom: 14px;
+    }
+    .season-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+    }
+    .season-card {
+      border-radius: 10px;
+      border: 2px solid rgba(255,255,255,0.12);
+      background: #102131;
+      color: #fff;
+      padding: 22px 14px;
+      text-align: center;
+      cursor: pointer;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 8px;
+    }
+    .season-card.active {
+      border-color: #38bdf8;
+      background: #0c2a3c;
+    }
+    .season-icon {
+      font-size: 36px;
+      line-height: 1;
+    }
+    .season-name {
+      font-size: 18px;
+      font-weight: 850;
+    }
+    .season-tag {
+      font-size: 12px;
+      font-weight: 800;
+      text-transform: uppercase;
+      color: #38bdf8;
+      letter-spacing: 0.04em;
+    }
+    .modal-backdrop {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(0,0,0,0.62);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+      z-index: 20;
+    }
+    .modal-backdrop.hidden { display: none; }
+    .modal {
+      width: min(520px, 100%);
+      background: #0f1d29;
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 14px;
+      padding: 26px;
+    }
+    .modal h2 {
+      margin: 0 0 14px;
+      font-size: 22px;
+    }
+    .modal-body {
+      font-size: 15px;
+      line-height: 1.7;
+      color: rgba(248,250,252,0.86);
+      margin-bottom: 22px;
+    }
+    .modal-body ol {
+      margin: 10px 0 0;
+      padding-left: 22px;
+    }
+    .modal-actions {
+      display: flex;
+      gap: 12px;
+    }
+    .modal-btn {
+      flex: 1;
+      border: 0;
+      border-radius: 8px;
+      padding: 15px 12px;
+      font-size: 15px;
+      font-weight: 900;
+      cursor: pointer;
+    }
+    .modal-btn.cancel {
+      background: rgba(255,255,255,0.1);
+      color: #fff;
+    }
+    .modal-btn.confirm {
+      background: #38bdf8;
+      color: #03111c;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="page-header">
+      <button class="back" type="button" onclick="history.length > 1 ? history.back() : (window.location.href = (window.IB || '') + '/')">&#8592; Back</button>
+      <h1>${escapeHtml(title)}</h1>
+    </div>
+${humidityRow}${seasonRow}
+  </main>
+
+  <div id="seasonModal" class="modal-backdrop hidden">
+    <div class="modal">
+      <h2 id="seasonModalTitle">Switch mode?</h2>
+      <div id="seasonModalBody" class="modal-body"></div>
+      <div class="modal-actions">
+        <button id="seasonModalCancel" class="modal-btn cancel" type="button">Cancel</button>
+        <button id="seasonModalConfirm" class="modal-btn confirm" type="button">I Understand</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const CHECKLISTS = ${JSON.stringify(checklists)};
+    const SEASON_FALLBACK = ${JSON.stringify(fallbackSeason)};
+
+    const humidityToggle = document.getElementById('humidityToggle');
+    const humidityStatus = document.getElementById('humidityStatus');
+    const seasonStatus = document.getElementById('seasonStatus');
+    const furnaceGuardStatus = document.getElementById('furnaceGuardStatus');
+    const seasonButtons = Array.from(document.querySelectorAll('.season-card'));
+    const seasonModal = document.getElementById('seasonModal');
+    const seasonModalTitle = document.getElementById('seasonModalTitle');
+    const seasonModalBody = document.getElementById('seasonModalBody');
+    const seasonModalCancel = document.getElementById('seasonModalCancel');
+    const seasonModalConfirm = document.getElementById('seasonModalConfirm');
+
+    let pendingMode = null;
+    let latestSettings = null;
+
+    async function refresh() {
+      try {
+        const response = await fetch('/state', { cache: 'no-store' });
+        const data = await response.json();
+        applySettings(data.settings || {});
+      } catch (error) {
+        // Leave the last known display up; the main dashboard already
+        // surfaces connection problems, this page just re-tries silently.
+      }
+    }
+
+    function applySettings(settings) {
+      latestSettings = settings;
+
+      if (humidityToggle) {
+        const humidityOn = Boolean(settings.humidityCoolingEnabled);
+        humidityToggle.classList.toggle('on', humidityOn);
+        humidityToggle.setAttribute('aria-checked', String(humidityOn));
+        if (humidityStatus) humidityStatus.textContent = humidityOn ? 'On' : 'Off';
+      }
+
+      if (!seasonButtons.length) return;
+      const known = seasonButtons.map(btn => btn.dataset.mode);
+      const mode = known.includes(settings.seasonalMode) ? settings.seasonalMode : SEASON_FALLBACK;
+      if (seasonStatus) seasonStatus.textContent = 'Current mode: ' + mode;
+      if (furnaceGuardStatus) {
+        if (settings.furnaceGuardActive === null || settings.furnaceGuardActive === undefined) {
+          furnaceGuardStatus.textContent = '';
+        } else {
+          furnaceGuardStatus.textContent = settings.furnaceGuardActive
+            ? 'Furnace guard: engaged \u2014 furnace calls are being held back'
+            : 'Furnace guard: not engaged \u2014 furnace is available as normal';
+          furnaceGuardStatus.style.color = settings.furnaceGuardActive ? '#fbbf24' : 'rgba(248,250,252,0.55)';
+        }
+      }
+      seasonButtons.forEach(btn => {
+        const active = btn.dataset.mode === mode;
+        btn.classList.toggle('active', active);
+        const tag = btn.querySelector('.season-tag');
+        if (tag) tag.style.visibility = active ? 'visible' : 'hidden';
+      });
+    }
+
+    async function postAction(name, options = {}) {
+      const response = await fetch('/action', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name, ...options })
+      });
+      if (!response.ok) throw new Error('Action failed');
+      await refresh();
+    }
+
+    if (humidityToggle) {
+      humidityToggle.addEventListener('click', () => {
+        postAction('humidityCoolingToggle').catch(() => {});
+      });
+    }
+
+    function openSeasonModal(mode) {
+      const info = CHECKLISTS[mode];
+      if (!info) return;
+      pendingMode = mode;
+      seasonModalTitle.textContent = info.title;
+      seasonModalBody.innerHTML = info.steps && info.steps.length
+        ? info.intro + '<ol>' + info.steps.map(step => '<li>' + step + '</li>').join('') + '</ol>'
+        : info.intro;
+      seasonModalConfirm.textContent = info.confirmLabel;
+      seasonModal.classList.remove('hidden');
+    }
+
+    function closeSeasonModal() {
+      pendingMode = null;
+      seasonModal.classList.add('hidden');
+    }
+
+    seasonButtons.forEach(btn => {
+      btn.addEventListener('click', () => {
+        const mode = btn.dataset.mode;
+        if (latestSettings && latestSettings.seasonalMode === mode) return;
+        openSeasonModal(mode);
+      });
+    });
+
+    seasonModalCancel.addEventListener('click', closeSeasonModal);
+    seasonModal.addEventListener('click', event => {
+      if (event.target === seasonModal) closeSeasonModal();
+    });
+    seasonModalConfirm.addEventListener('click', () => {
+      if (!pendingMode) return;
+      const mode = pendingMode;
+      seasonModalConfirm.disabled = true;
+      postAction('seasonModeSet', { mode })
+        .catch(() => {})
+        .finally(() => {
+          seasonModalConfirm.disabled = false;
+          closeSeasonModal();
+        });
+    });
+
+    refresh();
+    setInterval(refresh, 3000);
+  </script>
+${frameoDeviceBootstrapScript()}
+</body>
+</html>`;
+}
+
+function clipsHtml(slug, ib = '') {
   const camera = cameraConfig(slug);
   if (!camera) return null;
   return `<!doctype html>
@@ -4520,6 +5090,7 @@ function clipsHtml(slug) {
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
   <title>${escapeHtml(camera.label)} Clips</title>
+  ${ingressHeadScript(ib)}
   <style>
     html, body {
       margin: 0;
@@ -4597,7 +5168,7 @@ function clipsHtml(slug) {
 <body>
   <header>
     <h1>${escapeHtml(camera.label)} Clips</h1>
-    <button onclick="location.href='/cameras'">Cameras</button>
+    <button onclick="location.href=(window.IB || '') + '/cameras'">Cameras</button>
   </header>
   <main>
     <div id="status" class="status">Loading clips</div>
@@ -4652,12 +5223,27 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // Prefix the browser sees when this panel is mounted behind a reverse proxy.
+  const ingressBase = String(req.headers['x-ingress-path'] || '').replace(/\/+$/, '');
+
   try {
     if (req.method === 'GET' && url.pathname === '/') {
       send(res, 200, {
         'content-type': 'text/html; charset=utf-8',
         'cache-control': 'no-store'
-      }, clientHtml());
+      }, clientHtml(ingressBase));
+      return;
+    }
+
+    if (req.method === 'GET' && url.pathname === '/hvac-settings') {
+      if (!settingsPageEnabled()) {
+        send(res, 404, { 'content-type': 'text/plain; charset=utf-8' }, 'settings page is not configured');
+        return;
+      }
+      send(res, 200, {
+        'content-type': 'text/html; charset=utf-8',
+        'cache-control': 'no-store'
+      }, hvacSettingsHtml(ingressBase));
       return;
     }
 
@@ -4665,7 +5251,7 @@ const server = http.createServer(async (req, res) => {
       send(res, 200, {
         'content-type': 'text/html; charset=utf-8',
         'cache-control': 'no-store'
-      }, cameraDashboardHtml());
+      }, cameraDashboardHtml(ingressBase));
       return;
     }
 
@@ -4673,7 +5259,7 @@ const server = http.createServer(async (req, res) => {
       send(res, 200, {
         'content-type': 'text/html; charset=utf-8',
         'cache-control': 'no-store'
-      }, micTestHtml());
+      }, micTestHtml(ingressBase));
       return;
     }
 
@@ -4681,7 +5267,7 @@ const server = http.createServer(async (req, res) => {
       send(res, 200, {
         'content-type': 'text/html; charset=utf-8',
         'cache-control': 'no-store'
-      }, plainTestHtml());
+      }, plainTestHtml(ingressBase));
       return;
     }
 
@@ -4737,7 +5323,7 @@ const server = http.createServer(async (req, res) => {
     const liveMatch = url.pathname.match(/^\/live\/([^/]+)$/);
     if (req.method === 'GET' && liveMatch) {
       await pollStates();
-      const body = liveHtml(decodeURIComponent(liveMatch[1]));
+      const body = liveHtml(decodeURIComponent(liveMatch[1]), ingressBase);
       if (!body) {
         send(res, 404, { 'content-type': 'text/plain; charset=utf-8' }, 'unknown camera');
         return;
@@ -4792,7 +5378,7 @@ const server = http.createServer(async (req, res) => {
 
     const clipsPageMatch = url.pathname.match(/^\/clips\/([^/]+)$/);
     if (req.method === 'GET' && clipsPageMatch) {
-      const body = clipsHtml(decodeURIComponent(clipsPageMatch[1]));
+      const body = clipsHtml(decodeURIComponent(clipsPageMatch[1]), ingressBase);
       if (!body) {
         send(res, 404, { 'content-type': 'text/plain; charset=utf-8' }, 'unknown camera');
         return;

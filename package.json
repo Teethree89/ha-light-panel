@@ -10,7 +10,8 @@
     "validate": "node scripts/validate-config.js && node scripts/validate-addon-repo.js",
     "test": "node scripts/validate-config.js examples/frameo-climate.json && node scripts/validate-config.js examples/starter.json && node scripts/validate-addon-repo.js && node --check server.js",
     "demo": "node scripts/demo-server.js",
-    "demo:ha": "node scripts/demo-server.js --ha-only"
+    "demo:ha": "node scripts/demo-server.js --ha-only",
+    "sync-addon": "node scripts/sync-addon.js"
   },
   "engines": {
     "node": ">=20"
