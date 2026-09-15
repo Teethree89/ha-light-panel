@@ -5493,6 +5493,7 @@ function visualBuilderHtml(ib = '') {
     <section class="workspace"><div class="workspace-title"><div><h1>Build your dashboard</h1><p>Choose a card, then tune it in the inspector.</p></div><button class="quiet" id="clear">New draft</button></div><div class="canvas" id="canvas"></div></section>
     <aside class="right"><h2>Inspector</h2><div id="inspector"></div></aside>
   </main>
+  <datalist id="entityChoices"></datalist>
   <dialog id="yamlDialog"><div class="dialog-head"><h2 id="dialogTitle">Import Home Assistant YAML</h2><button class="quiet" id="closeDialog">Close</button></div><div class="dialog-body"><p class="tiny" id="dialogHint">Paste one card, a <code>cards:</code> list, or dashboard YAML. Common card properties are brought into the visual editor; anything unfamiliar remains editable in Home Assistant after export.</p><textarea id="yamlText" spellcheck="false" placeholder="type: entities\ntitle: Kitchen\nentities:\n  - entity: light.kitchen\n    name: Pendants"></textarea><div class="notice" id="notice"></div></div><div class="dialog-foot"><button class="secondary" id="closeDialog2">Cancel</button><button id="importConfirm">Import cards</button></div></dialog>
   <script>
   (function () {
