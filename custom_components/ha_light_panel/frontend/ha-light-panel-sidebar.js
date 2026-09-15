@@ -14,7 +14,14 @@ class HaLightPanelSidebar extends HTMLElement {
     this._busy = false;
   }
 
-  set hass(value) { this._hass = value; if (this.isConnected) this._checkPanel(); }
+  // Home Assistant assigns a fresh hass object whenever its state changes.
+  // Re-checking here would tear down and recreate the iframe every few
+  // seconds, preventing the embedded panel from ever settling.
+  set hass(value) {
+    const firstAssignment = !this._hass;
+    this._hass = value;
+    if (firstAssignment && this.isConnected) this._checkPanel();
+  }
   set narrow(_value) {}
   set panel(_value) {}
 
