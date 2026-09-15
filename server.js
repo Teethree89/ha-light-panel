@@ -457,6 +457,11 @@ const HOST = process.env.HOST || CONFIG.server?.host || '0.0.0.0';
 const PORT = positiveNumber(process.env.PORT, positiveNumber(CONFIG.server?.port, 8890));
 const POLL_MS = Math.max(750, positiveNumber(process.env.POLL_MS, positiveNumber(CONFIG.server?.pollMs, 2000)));
 const SECRET_FILE = process.env.HA_SECRET_FILE || '';
+// A systemd install can opt into safe on-demand updates. The Node service is
+// deliberately unprivileged: it only creates this request file. A root-owned
+// .path unit consumes it and runs the updater outside this process.
+const UPDATE_REQUEST_PATH = process.env.UPDATE_REQUEST_PATH || '';
+const UPDATE_SERVICE = process.env.UPDATE_SERVICE || '';
 
 const ENTITY_ID_PATTERN = /^[a-z_]+\.[a-z0-9_]+$/;
 
@@ -1768,6 +1773,39 @@ function sendJson(res, status, body) {
     'content-type': 'application/json; charset=utf-8',
     'cache-control': 'no-store'
   }, JSON.stringify(body));
+}
+
+function updateSupport() {
+  return {
+    method: UPDATE_REQUEST_PATH && UPDATE_SERVICE ? 'systemd' : 'manual',
+    available: Boolean(UPDATE_REQUEST_PATH && UPDATE_SERVICE),
+    service: UPDATE_SERVICE || '',
+    reason: UPDATE_REQUEST_PATH && UPDATE_SERVICE
+      ? ''
+      : 'This panel was not installed with the managed systemd updater.'
+  };
+}
+
+function localRequest(req) {
+  const address = String(req.socket?.remoteAddress || '');
+  return address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1';
+}
+
+function requestManagedUpdate(req) {
+  if (!localRequest(req)) {
+    const error = new Error('Managed updates may only be requested by the local Home Assistant host.');
+    error.statusCode = 403;
+    throw error;
+  }
+  const support = updateSupport();
+  if (!support.available) {
+    const error = new Error(support.reason);
+    error.statusCode = 501;
+    throw error;
+  }
+  fs.mkdirSync(path.dirname(UPDATE_REQUEST_PATH), { recursive: true });
+  fs.writeFileSync(UPDATE_REQUEST_PATH, JSON.stringify({ requestedAt: new Date().toISOString() }) + '\n', { mode: 0o600 });
+  return support;
 }
 
 // When the panel is reached through a reverse proxy that mounts it under a
@@ -6598,6 +6636,16 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (req.method === 'POST' && url.pathname === '/update') {
+      const update = requestManagedUpdate(req);
+      sendJson(res, 202, {
+        ok: true,
+        message: 'Update requested. The panel may be unavailable while the service restarts.',
+        update
+      });
+      return;
+    }
+
     if (req.method === 'GET' && url.pathname === '/health') {
       sendJson(res, lastError ? 503 : 200, {
         service: 'ha_light_panel',
@@ -6607,7 +6655,8 @@ const server = http.createServer(async (req, res) => {
         haUrl: haBaseUrl(),
         lastPollAt,
         lastError,
-        pollMs: POLL_MS
+        pollMs: POLL_MS,
+        update: updateSupport()
       });
       return;
     }

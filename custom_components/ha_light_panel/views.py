@@ -52,6 +52,7 @@ def async_register_assets(hass: HomeAssistant) -> None:
         return
     hass.http.register_view(HaLightPanelSidebarStatusView(hass))
     hass.http.register_view(HaLightPanelSidebarDiscoverView(hass))
+    hass.http.register_view(HaLightPanelSidebarUpdateView(hass))
     hass.http.register_view(HaLightPanelAssetView())
     hass.data[DOMAIN]["_assets_registered"] = True
 
@@ -122,6 +123,7 @@ async def _probe_upstream(hass: HomeAssistant, upstream: str) -> dict:
                 "detail": "Panel service is reachable.",
                 "name": str(payload.get("name") or "HA Light Panel (legacy)"),
                 "version": str(payload.get("version") or ""),
+                "health": payload,
             }
     except (ClientError, TimeoutError, ValueError) as err:
         return {"reachable": False, "detail": str(err) or "Connection failed."}
@@ -227,6 +229,7 @@ class HaLightPanelSidebarStatusView(HomeAssistantView):
                     "entry_state": str(entry.state) if entry else "not_configured",
                     "reachable": probe["reachable"],
                     "detail": probe["detail"],
+                    "health": probe.get("health") or {},
                     "default_upstream": DEFAULT_UPSTREAM,
                     "candidates": _addon_candidates(self.hass),
                 }
@@ -240,6 +243,7 @@ class HaLightPanelSidebarStatusView(HomeAssistantView):
                     "entry_state": "status_error",
                     "reachable": False,
                     "detail": "The panel status check failed. Open Settings → System → Logs and search for ‘HA Light Panel sidebar status’.",
+                    "health": {},
                     "default_upstream": DEFAULT_UPSTREAM,
                     "candidates": [],
                 }
@@ -303,6 +307,47 @@ class HaLightPanelSidebarDiscoverView(HomeAssistantView):
             )
 
 
+class HaLightPanelSidebarUpdateView(HomeAssistantView):
+    """Ask a locally installed panel to start its guarded systemd updater."""
+
+    requires_auth = True
+    url = f"{INGRESS_PATH}/sidebar-update"
+    name = "api:ha_light_panel:sidebar_update"
+
+    def __init__(self, hass: HomeAssistant) -> None:
+        self.hass = hass
+
+    @require_admin
+    async def post(self, _request: web.Request) -> web.Response:
+        entry = _entry(self.hass)
+        upstream = _valid_upstream(entry.data.get(CONF_UPSTREAM)) if entry else None
+        if not upstream:
+            raise web.HTTPServiceUnavailable(text="Connect the panel before requesting an update.\n")
+        try:
+            async with async_get_clientsession(self.hass).post(
+                f"{upstream}/update", timeout=ClientTimeout(total=8)
+            ) as response:
+                payload = await response.json(content_type=None)
+                if response.status >= 400:
+                    message = payload.get("error") if isinstance(payload, dict) else "Panel update could not be started."
+                    return web.json_response(
+                        {"started": False, "message": str(message)},
+                        status=response.status,
+                    )
+                return web.json_response(
+                    {
+                        "started": True,
+                        "message": (payload.get("message") if isinstance(payload, dict) else "Update started."),
+                    },
+                    status=202,
+                )
+        except (ClientError, TimeoutError) as err:
+            return web.json_response(
+                {"started": False, "message": f"Could not reach the panel updater: {err}"},
+                status=502,
+            )
+
+
 class HaLightPanelProxyView(HomeAssistantView):
     """Proxy the LAN-only panel through HA core for remote access.
 
@@ -337,6 +382,12 @@ class HaLightPanelProxyView(HomeAssistantView):
     async def _proxy(
         self, request: web.Request, requested_path: str
     ) -> web.StreamResponse:
+        # `/update` is intentionally not a normal ingress route. The panel
+        # accepts it only from localhost so its Node process can request a
+        # root-owned systemd path unit; forwarding it here would let an
+        # unauthenticated browser turn that into a public update trigger.
+        if requested_path.lstrip("/") == "update":
+            raise web.HTTPNotFound()
         session = async_get_clientsession(self.hass)
         target = f"{self._upstream}/{requested_path.lstrip('/')}"
         if request.query_string:

@@ -1,0 +1,10 @@
+[Unit]
+Description=Check for and install an HA Light Panel release
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/ha-light-panel/update.env
+ExecStartPre=/usr/bin/rm -f ${UPDATE_REQUEST_PATH}
+ExecStart=/usr/local/sbin/ha-light-panel-update.sh

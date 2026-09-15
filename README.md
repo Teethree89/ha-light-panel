@@ -164,13 +164,29 @@ docker compose -f docker-compose.example.yml --env-file .env up -d --build
 
 ## systemd
 
-On a Debian-style host with Node.js 20+:
+On a Debian-style host with Node.js 20+ use the managed installer:
 
 ```sh
-sudo scripts/install-systemd.sh
+curl -fsSL https://raw.githubusercontent.com/Teethree89/ha-light-panel/main/scripts/bootstrap.sh | sudo bash
+```
+
+It keeps a tagged source checkout, deploys the released server code, preserves
+`/etc/ha-light-panel.env` and `/opt/ha-light-panel/config.json`, and installs
+an on-demand updater. Re-run the same command to upgrade. Set
+`INSTALL_AUTOUPDATE=1` before the command to enable the optional daily check.
+
+The HA sidebar **Overview** reports the running version and offers **Update
+panel** when this managed systemd installer is present. The Node process cannot
+run privileged commands: it writes a local request that a root-owned systemd
+path unit consumes.
+
+From a local checkout, `sudo scripts/install-systemd.sh` performs the same
+install. Then edit the environment and config only on first setup:
+
+```sh
 sudo nano /etc/ha-light-panel.env
 sudo nano /opt/ha-light-panel/config.json
-sudo systemctl start ha-light-panel
+sudo systemctl restart ha-light-panel
 ```
 
 Then open:

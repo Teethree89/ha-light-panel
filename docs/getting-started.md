@@ -116,7 +116,8 @@ Once it works, pick a deployment:
 
 - **Home Assistant OS** — the [add-on](../addon/DOCS.md), easiest if you run HAOS
 - **Docker** — `docker-compose.example.yml`
-- **systemd** — `scripts/install-systemd.sh` on a Debian-style host
+- **systemd** — the tagged managed installer on a Debian-style host:
+  `curl -fsSL https://raw.githubusercontent.com/Teethree89/ha-light-panel/main/scripts/bootstrap.sh | sudo bash`
 
 Then point a display at it: see the
 [Frameo / Fully Kiosk guide](frameo-fully-kiosk.md).
