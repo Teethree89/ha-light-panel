@@ -94,7 +94,7 @@ class HaLightPanelSidebar extends HTMLElement {
       this._connection = "unavailable";
       this._message = panels.length
         ? `Found ${panels.length} ${panels.length === 1 ? "HA Light Panel service" : "HA Light Panel services"}. Choose one below.`
-        : "No HA Light Panel service answered on this Home Assistant host or its detected add-on address.";
+        : result.error || "No HA Light Panel service answered on this Home Assistant host or its detected add-on address.";
     } catch (_error) {
       this._connection = "unavailable";
       this._message = "Panel discovery could not run. Enter the panel address manually.";

@@ -213,23 +213,37 @@ class HaLightPanelSidebarStatusView(HomeAssistantView):
 
     @require_admin
     async def get(self, _request: web.Request) -> web.Response:
-        entry = _entry(self.hass)
-        upstream = _valid_upstream(entry.data.get(CONF_UPSTREAM)) if entry else ""
-        probe = await _probe_upstream(self.hass, upstream) if upstream else {
-            "reachable": False,
-            "detail": "The integration has not been configured yet.",
-        }
-        return web.json_response(
-            {
-                "configured": entry is not None,
-                "upstream": upstream,
-                "entry_state": str(entry.state) if entry else "not_configured",
-                "reachable": probe["reachable"],
-                "detail": probe["detail"],
-                "default_upstream": DEFAULT_UPSTREAM,
-                "candidates": _addon_candidates(self.hass),
+        try:
+            entry = _entry(self.hass)
+            upstream = _valid_upstream(entry.data.get(CONF_UPSTREAM)) if entry else ""
+            probe = await _probe_upstream(self.hass, upstream) if upstream else {
+                "reachable": False,
+                "detail": "The integration has not been configured yet.",
             }
-        )
+            return web.json_response(
+                {
+                    "configured": entry is not None,
+                    "upstream": upstream,
+                    "entry_state": str(entry.state) if entry else "not_configured",
+                    "reachable": probe["reachable"],
+                    "detail": probe["detail"],
+                    "default_upstream": DEFAULT_UPSTREAM,
+                    "candidates": _addon_candidates(self.hass),
+                }
+            )
+        except Exception:  # noqa: BLE001 - sidebar setup must stay usable
+            LOGGER.exception("Could not build HA Light Panel sidebar status")
+            return web.json_response(
+                {
+                    "configured": False,
+                    "upstream": "",
+                    "entry_state": "status_error",
+                    "reachable": False,
+                    "detail": "The panel status check failed. Open Settings → System → Logs and search for ‘HA Light Panel sidebar status’.",
+                    "default_upstream": DEFAULT_UPSTREAM,
+                    "candidates": [],
+                }
+            )
 
     @require_admin
     async def post(self, request: web.Request) -> web.Response:
@@ -277,7 +291,16 @@ class HaLightPanelSidebarDiscoverView(HomeAssistantView):
     @require_admin
     async def post(self, _request: web.Request) -> web.Response:
         """Return known local candidates that identify themselves as this panel."""
-        return web.json_response({"panels": await _discover_panels(self.hass)})
+        try:
+            return web.json_response({"panels": await _discover_panels(self.hass)})
+        except Exception:  # noqa: BLE001 - discovery is an optional convenience
+            LOGGER.exception("Could not discover HA Light Panel addresses")
+            return web.json_response(
+                {
+                    "panels": [],
+                    "error": "Discovery failed. Enter the panel address manually and check the Home Assistant log for details.",
+                }
+            )
 
 
 class HaLightPanelProxyView(HomeAssistantView):
