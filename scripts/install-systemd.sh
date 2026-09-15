@@ -24,6 +24,12 @@ if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
   exit 1
 fi
 
+# An older deployment may deliberately rely on the server's built-in layout
+# rather than a config.json. Record that before installing the new code so an
+# adoption never turns a working default layout into the starter example.
+EXISTING_APP=0
+[[ -f "$APP_DIR/server.js" ]] && EXISTING_APP=1
+
 if ! command -v node >/dev/null 2>&1; then
   echo "Node.js 20+ is required. Install nodejs first." >&2
   exit 1
@@ -38,9 +44,15 @@ install -m 0644 "$ROOT/server.js" "$ROOT/package.json" "$APP_DIR/"
 mkdir -p "$APP_DIR/examples"
 install -m 0644 "$ROOT/examples/frameo-climate.json" "$APP_DIR/examples/"
 
-if [[ ! -f "$APP_DIR/config.json" ]]; then
+if [[ ! -f "$APP_DIR/config.json" && "$EXISTING_APP" != "1" ]]; then
   install -m 0644 "$ROOT/examples/frameo-climate.json" "$APP_DIR/config.json"
   echo "Created $APP_DIR/config.json from the example. Edit it for your HA entities."
+elif [[ ! -f "$APP_DIR/config.json" ]]; then
+  # Legacy installations commonly rendered DEFAULT_CONFIG directly. Capture
+  # that exact layout before replacing server.js, so adoption neither swaps in
+  # the generic example nor leaves the owner without an editable config.
+  bash "$ROOT/scripts/capture-default-config.sh" --no-backup
+  echo "Captured the existing built-in layout in $APP_DIR/config.json."
 fi
 
 if [[ ! -f "$ENV_FILE" ]]; then

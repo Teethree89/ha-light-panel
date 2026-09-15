@@ -331,6 +331,15 @@ const DEFAULT_CONFIG = {
   ]
 };
 
+// Lets a systemd adoption turn a legacy built-in deployment into an explicit,
+// reviewable config.json without starting the HTTP server or reading secrets.
+// Keep this immediately after DEFAULT_CONFIG so it always exports the exact
+// reference layout that an older config-less service was rendering.
+if (process.argv.includes('--print-default-config')) {
+  process.stdout.write(`${JSON.stringify(DEFAULT_CONFIG, null, 2)}\n`);
+  process.exit(0);
+}
+
 // JSON with `//` and `/* */` comments, matching scripts/validate-config.js.
 function stripJsonComments(text) {
   let output = '';
@@ -6623,7 +6632,11 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === 'GET' && url.pathname === '/state') {
-      await pollStates();
+      // The SVG shell remains useful while HA is starting, a token is being
+      // repaired, or an adopted systemd install has not been configured yet.
+      // Return a degraded state instead of turning each browser poll into a
+      // 500/reconnect loop.
+      await pollStates().catch(error => { lastError = error.message; });
       sendJson(res, 200, dashboardState());
       return;
     }

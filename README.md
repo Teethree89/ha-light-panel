@@ -172,7 +172,9 @@ curl -fsSL https://raw.githubusercontent.com/Teethree89/ha-light-panel/main/scri
 
 It keeps a tagged source checkout, deploys the released server code, preserves
 `/etc/ha-light-panel.env` and `/opt/ha-light-panel/config.json`, and installs
-an on-demand updater. Re-run the same command to upgrade. Set
+an on-demand updater. When adopting a legacy config-less panel, it first saves
+the exact built-in Frameo layout as `/opt/ha-light-panel/config.json` rather
+than replacing it with the generic example. Re-run the same command to upgrade. Set
 `INSTALL_AUTOUPDATE=1` before the command to enable the optional daily check.
 
 The HA sidebar **Overview** reports the running version and offers **Update
@@ -195,6 +197,27 @@ If an older installation already has a differently named service, adopt it by
 passing its service name, app directory, environment file, and service user to
 the same bootstrap script. This preserves the existing environment and
 `config.json`, installs the updater units beside that service, and restarts it.
+
+If a prior adoption accidentally created the generic example file, export the
+legacy built-in layout safely. The command first saves the current file as a
+timestamped `config.json.before-layout-capture.*` backup:
+
+```sh
+sudo env APP_DIR=/opt/frameo-svg-dashboard \
+  bash /opt/src/ha-light-panel/scripts/capture-default-config.sh
+```
+
+For a panel running on the same Home Assistant host, set the service-only API
+address to `http://127.0.0.1:8123`; use the browser-facing HA URL separately
+when needed. Do not put a token in `config.json`:
+
+```sh
+sudo nano /etc/frameo-dashboard.env
+# HA_URL=http://127.0.0.1:8123
+# HA_BROWSER_URL=https://ha-server.home
+# HA_TOKEN=your-long-lived-access-token
+sudo systemctl restart frameo-svg-dashboard
+```
 
 Then open:
 
