@@ -67,6 +67,8 @@ install -m 0644 "$ROOT/systemd/ha-light-panel.service" "$SERVICE_FILE"
 sed -i "s#WorkingDirectory=/opt/ha-light-panel#WorkingDirectory=$APP_DIR#" "$SERVICE_FILE"
 sed -i "s#EnvironmentFile=/etc/ha-light-panel.env#EnvironmentFile=$ENV_FILE#" "$SERVICE_FILE"
 sed -i "s#ExecStart=/usr/bin/node /opt/ha-light-panel/server.js#ExecStart=$(command -v node) $APP_DIR/server.js#" "$SERVICE_FILE"
+sed -i "s#User=ha-light-panel#User=$SERVICE_USER#" "$SERVICE_FILE"
+sed -i "s#Group=ha-light-panel#Group=$SERVICE_USER#" "$SERVICE_FILE"
 sed -i "s#ReadWritePaths=/tmp#ReadWritePaths=/tmp $STATE_DIR#" "$SERVICE_FILE"
 
 # Match the Blink proxy's install model: retain a tagged source checkout for
@@ -86,11 +88,16 @@ sed -i "s#ha-light-panel/update.request#${UPDATE_REQUEST_PATH#/var/lib/}#g" "$UP
     "$SRC_DIR" "$APP_DIR" "$ENV_FILE" "$SERVICE_NAME" "$STATE_DIR" "$UPDATE_REQUEST_PATH" >"$UPDATE_ENV_FILE"
 )
 
-chown -R root:root "$APP_DIR"
+# Code is root-owned; preserve an existing config's owner and mode. A custom
+# service user may deliberately keep its config or secret reference private.
+chown root:root "$APP_DIR/server.js" "$APP_DIR/package.json" "$APP_DIR/examples/frameo-climate.json"
 chown "$SERVICE_USER":"$SERVICE_USER" "$STATE_DIR"
 systemctl daemon-reload
 systemctl enable "$SERVICE_NAME.service"
 systemctl enable --now "$UPDATE_PATH_NAME"
+# Re-running this script is the upgrade path. Restart so the long-running
+# process cannot keep serving the code that was just replaced.
+systemctl restart "$SERVICE_NAME.service"
 
 if [[ "${INSTALL_AUTOUPDATE:-0}" = "1" ]]; then
   systemctl enable --now "$UPDATE_TIMER_NAME"

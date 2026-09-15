@@ -12,6 +12,7 @@ SRC_DIR="${SRC_DIR:-/opt/src/ha-light-panel}"
 APP_DIR="${APP_DIR:-/opt/ha-light-panel}"
 ENV_FILE="${ENV_FILE:-/etc/ha-light-panel.env}"
 SERVICE_NAME="${SERVICE_NAME:-ha-light-panel}"
+SERVICE_USER="${SERVICE_USER:-ha-light-panel}"
 VERSION="${VERSION:-}"
 
 sort_release_tags() {
@@ -71,5 +72,5 @@ fi
 
 echo "Installing $TARGET (currently ${INSTALLED:-unknown})"
 git -C "$SRC_DIR" checkout --quiet "$TARGET"
-exec env APP_DIR="$APP_DIR" ENV_FILE="$ENV_FILE" SERVICE_NAME="$SERVICE_NAME" SRC_DIR="$SRC_DIR" \
+exec env APP_DIR="$APP_DIR" ENV_FILE="$ENV_FILE" SERVICE_NAME="$SERVICE_NAME" SERVICE_USER="$SERVICE_USER" SRC_DIR="$SRC_DIR" \
   "$SRC_DIR/scripts/install-systemd.sh"

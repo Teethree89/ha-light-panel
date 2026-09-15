@@ -189,6 +189,13 @@ sudo nano /opt/ha-light-panel/config.json
 sudo systemctl restart ha-light-panel
 ```
 
+### Adopt an existing service
+
+If an older installation already has a differently named service, adopt it by
+passing its service name, app directory, environment file, and service user to
+the same bootstrap script. This preserves the existing environment and
+`config.json`, installs the updater units beside that service, and restarts it.
+
 Then open:
 
 ```text
