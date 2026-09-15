@@ -4893,6 +4893,7 @@ function micTestHtml(ib = '') {
   </style>
 </head>
 <body>
+  <datalist id="entityChoices"></datalist>
   <main>
     <div class="page-header">
       <button class="back" type="button" onclick="history.length > 1 ? history.back() : (window.location.href = (window.IB || '') + '/')">&#8592; Back</button>
@@ -5444,7 +5445,7 @@ ${frameoDeviceBootstrapScript()}
 // copy/download action, so opening the builder can never change an HA
 // dashboard or this panel's own config.
 function visualBuilderHtml(ib = '') {
-  return `<!doctype html>
+  return String.raw`<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
@@ -5505,6 +5506,7 @@ function visualBuilderHtml(ib = '') {
       { type:'picture-entity', label:'Picture entity', hint:'An image-backed entity card', entity:'camera.front_door', title:'Front door' }
     ];
     var cards = [];
+    var entityChoices = [];
     var selectedId = '';
     var $ = function (id) { return document.getElementById(id); };
     function uid() { return 'card-' + Date.now().toString(36) + Math.random().toString(36).slice(2,7); }
@@ -5528,7 +5530,7 @@ function visualBuilderHtml(ib = '') {
       return '<article class="card' + (card.id === selectedId ? ' selected' : '') + '" data-id="' + card.id + '" style="grid-column:span ' + Math.min(3,Math.max(1,Number(card.span)||1)) + '"><div class="card-tools"><button data-move="up" title="Move earlier">↑</button><button data-move="down" title="Move later">↓</button><button data-remove="yes" title="Delete">×</button></div><div class="eyebrow">' + type + '</div><div class="card-name">' + heading + '</div>' + (card.type === 'markdown' ? '' : '<div class="entity">' + entity + '</div>') + body + '</article>';
     }
     function renderCanvas() { $('canvas').innerHTML = cards.length ? cards.map(cardPreview).join('') : '<div class="empty"><b>Your canvas is ready.</b>Pick a card type on the left, or import the YAML from a dashboard you already use.</div>'; }
-    function field(label, key, value, kind) { return '<div class="field"><label>' + label + '</label>' + (kind === 'select' ? '<select data-field="' + key + '"><option value="1"' + (Number(value)===1?' selected':'') + '>One column</option><option value="2"' + (Number(value)===2?' selected':'') + '>Two columns</option><option value="3"' + (Number(value)===3?' selected':'') + '>Full width</option></select>' : '<' + (kind === 'textarea' ? 'textarea' : 'input') + ' data-field="' + key + '" value="' + (kind === 'textarea' ? '' : escapeHtml(value)) + '"' + (kind === 'textarea' ? '>' + escapeHtml(value) + '</textarea>' : '>') + '</div>'); }
+    function field(label, key, value, kind) { return '<div class="field"><label>' + label + '</label>' + (kind === 'select' ? '<select data-field="' + key + '"><option value="1"' + (Number(value)===1?' selected':'') + '>One column</option><option value="2"' + (Number(value)===2?' selected':'') + '>Two columns</option><option value="3"' + (Number(value)===3?' selected':'') + '>Full width</option></select>' : '<' + (kind === 'textarea' ? 'textarea' : 'input') + ' data-field="' + key + '"' + (key === 'entity' ? ' list="entityChoices"' : '') + ' value="' + (kind === 'textarea' ? '' : escapeHtml(value)) + '"' + (kind === 'textarea' ? '>' + escapeHtml(value) + '</textarea>' : '>') + '</div>'); }
     function renderInspector() {
       var card = selected(); if (!card) { $('inspector').innerHTML='<div class="inspector-empty">Select a card to change its details.</div>'; return; }
       var html = field('Card title / name','title',card.title) + (card.type === 'markdown' ? field('Markdown content','content',card.content,'textarea') : field('Entity ID','entity',card.entity));
@@ -5539,6 +5541,8 @@ function visualBuilderHtml(ib = '') {
     }
     function renderTypes() { $('types').innerHTML=types.map(function(spec){ return '<button class="type" data-type="' + spec.type + '">' + spec.label + '<span>' + spec.hint + '</span></button>'; }).join(''); }
     function render() { renderCanvas(); renderInspector(); }
+    function renderEntityChoices() { $('entityChoices').innerHTML=entityChoices.map(function(item){ return '<option value="' + escapeHtml(item.id) + '">' + escapeHtml(item.name || item.id) + '</option>'; }).join(''); }
+    async function loadEntityChoices() { try { var response=await fetch('/builder/entities',{cache:'no-store'}); var payload=await response.json(); if (!payload.ok) throw new Error(payload.error || 'not connected'); entityChoices=payload.entities || []; renderEntityChoices(); $('saved').textContent=entityChoices.length+' Home Assistant entities ready'; } catch (_) { $('saved').textContent='Offline draft · HA entity suggestions unavailable'; } }
     function yamlScalar(value) { var raw=String(value || ''); if (!raw || /[:#{}\[\],&*!|>'"%@]|^[-?]|^(true|false|null|yes|no|on|off|\d+)$/i.test(raw) || /^\s|\s$/.test(raw)) return JSON.stringify(raw); return raw; }
     function cardYaml(card, indent) { var s=indent || ''; var rows=[s + 'type: ' + yamlScalar(card.type)]; if (card.title) rows.push(s + (card.type==='markdown' ? 'title' : 'name') + ': ' + yamlScalar(card.title)); if (card.entity && card.type!=='entities' && card.type!=='markdown') rows.push(s+'entity: '+yamlScalar(card.entity)); if (card.icon) rows.push(s+'icon: '+yamlScalar(card.icon)); if (card.secondaryInfo && card.type!=='markdown') rows.push(s+'secondary_info: '+yamlScalar(card.secondaryInfo)); if (card.type==='entities') { rows.push(s+'entities:'); (card.entities || []).filter(Boolean).forEach(function(entity){ rows.push(s+'  - entity: '+yamlScalar(entity)); }); } if (card.type==='markdown' && card.content) { rows.push(s+'content: |'); card.content.split('\n').forEach(function(line){ rows.push(s+'  '+line); }); } return rows.join('\n'); }
     function outputYaml() { return 'cards:\n' + cards.map(function(card){ return cardYaml(card,'  ').replace(/^  type:/,'  - type:'); }).join('\n'); }
@@ -5556,7 +5560,7 @@ function visualBuilderHtml(ib = '') {
     var dialog=$('yamlDialog'); $('import').onclick=function(){ $('dialogTitle').textContent='Import Home Assistant YAML'; $('yamlText').value=''; $('notice').textContent=''; dialog.showModal(); }; $('closeDialog').onclick=$('closeDialog2').onclick=function(){dialog.close();}; $('importConfirm').onclick=function(){try{var count=importYaml($('yamlText').value);dialog.close();$('saved').textContent='Imported '+count+' card'+(count===1?'':'s')+' · saved locally';}catch(error){$('notice').textContent=error.message;}};
     $('copy').onclick=async function(){ if(!cards.length){alert('Add or import a card first.');return;} try{await navigator.clipboard.writeText(outputYaml());$('saved').textContent='YAML copied to clipboard';}catch(_){$('yamlText').value=outputYaml();$('dialogTitle').textContent='Copy your YAML';$('notice').textContent='Your browser blocked automatic clipboard access. Select and copy the text below.';dialog.showModal();} };
     $('download').onclick=function(){ if(!cards.length){alert('Add or import a card first.');return;} var blob=new Blob([outputYaml()+'\n'],{type:'text/yaml'});var a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='lovelace-cards.yaml';a.click();setTimeout(function(){URL.revokeObjectURL(a.href);},0); };
-    load(); renderTypes(); render();
+    load(); renderTypes(); render(); loadEntityChoices();
   })();
   </script>
 </body>
@@ -6127,6 +6131,24 @@ const server = http.createServer(async (req, res) => {
         'content-type': 'text/html; charset=utf-8',
         'cache-control': 'no-store'
       }, visualBuilderHtml(ingressBase));
+      return;
+    }
+
+    // The builder only needs a small, safe slice of HA state: entity IDs and
+    // friendly names for autocomplete. It does not read or write dashboards.
+    if (req.method === 'GET' && url.pathname === '/builder/entities') {
+      try {
+        const states = await haFetch('/api/states');
+        const entities = (states || []).map(item => ({
+          id: item.entity_id,
+          name: String(item.attributes?.friendly_name || item.entity_id)
+        })).sort((left, right) => left.id.localeCompare(right.id));
+        sendJson(res, 200, { ok: true, entities });
+      } catch (error) {
+        // A missing token should not turn an otherwise useful local composer
+        // into a failed page, or mark the panel health endpoint unhealthy.
+        sendJson(res, 200, { ok: false, entities: [], error: error.message });
+      }
       return;
     }
 
