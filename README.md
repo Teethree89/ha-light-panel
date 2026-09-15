@@ -127,12 +127,18 @@ http://localhost:8890/
 
 ## Visual Card Builder
 
-Open `http://localhost:8890/builder` on a desktop browser to sketch a Home
-Assistant dashboard without editing YAML by hand. Add common Lovelace card
-types, select a card to edit its entity and title, and adjust its width on the
-visual canvas. You can also paste existing dashboard YAML (a single card, a
-`cards:` list, or a whole dashboard) to bring common card settings into the
-builder.
+Open the builder from a desktop browser at one of these URLs:
+
+- Direct Node, Docker, or add-on install: `http://<panel-server>:8890/builder`
+- Through the optional HA Light Panel HACS integration: `https://<your-ha-url>/api/ha_light_panel/builder`
+
+Add common Lovelace card types, select a card to edit its entity and title, and
+adjust its width on the visual canvas. When the panel has a working `HA_URL`
+and `HA_TOKEN`, Entity ID fields also offer every Home Assistant entity by ID
+and friendly name. Without those credentials, the builder remains a useful
+offline composer: add cards manually or paste existing dashboard YAML (a
+single card, a `cards:` list, or a whole dashboard) to bring common card
+settings into the builder.
 
 The builder saves its draft only in that browser. **Copy YAML** puts a
 `cards:` block on your clipboard, while **Download** saves it as a YAML file;

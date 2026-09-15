@@ -53,10 +53,17 @@ Once started, open `http://<your-ha-host>:8890` in any browser.
 ### Visual Card Builder
 
 On a desktop browser, open `http://<your-ha-host>:8890/builder` to assemble
-common Lovelace cards visually or import YAML you already have. The draft is
-kept in that browser only. Use **Copy YAML** or **Download** and then paste the
-result into a Home Assistant dashboard; the builder never changes Home
-Assistant or the panel configuration itself.
+common Lovelace cards visually or import YAML you already have. If you use the
+optional HA Light Panel HACS integration, the same page is also available at
+`https://<your-ha-url>/api/ha_light_panel/builder` — useful through Nabu Casa
+or another setup that exposes only Home Assistant itself.
+
+The add-on's `ha_url` and `ha_token` options let the builder offer your actual
+entity IDs and friendly names as you edit. If that connection is unavailable,
+you can still build cards manually or import YAML. The draft is kept in the
+browser only. Use **Copy YAML** or **Download** and then paste the result into
+a Home Assistant dashboard; the builder never changes Home Assistant or the
+panel configuration itself.
 
 For kiosk displays (Frameo, Fire tablet, old iPad), point Fully Kiosk Browser or
 WallPanel at that URL. See the [Frameo setup guide](https://github.com/Teethree89/ha-light-panel/blob/main/docs/frameo-fully-kiosk.md) for detailed steps.
