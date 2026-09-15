@@ -49,8 +49,10 @@ After restarting Home Assistant, the integration also adds an admin-only
 **HA Light Panel** item to the Home Assistant sidebar. It keeps the normal HA
 navigation visible while switching between the panel **Overview** and the
 visual **Builder**. Its **Device links** page copies the recommended panel and
-builder URLs for phones, tablets, desktops, and wall displays. The original
-direct URLs remain available as well.
+builder URLs for phones, tablets, desktops, and wall displays. If the panel is
+not connected, **Find panel address** tests safe local candidates and only
+offers services that identify as HA Light Panel. The original direct URLs
+remain available as well.
 
 ## Home Assistant OS Add-on
 

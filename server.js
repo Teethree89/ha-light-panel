@@ -3,6 +3,7 @@ const https = require('https');
 const fs = require('fs');
 const path = require('path');
 const { URL } = require('url');
+const PACKAGE_VERSION = require('./package.json').version;
 
 // ---------------------------------------------------------------------------
 // Config loading
@@ -6418,6 +6419,9 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === 'GET' && url.pathname === '/health') {
       sendJson(res, lastError ? 503 : 200, {
+        service: 'ha_light_panel',
+        name: 'HA Light Panel',
+        version: PACKAGE_VERSION,
         ok: !lastError,
         haUrl: haBaseUrl(),
         lastPollAt,

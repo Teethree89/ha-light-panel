@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from pathlib import Path
 from urllib.parse import urlparse
@@ -50,6 +51,7 @@ def async_register_assets(hass: HomeAssistant) -> None:
     if hass.data.setdefault(DOMAIN, {}).get("_assets_registered"):
         return
     hass.http.register_view(HaLightPanelSidebarStatusView(hass))
+    hass.http.register_view(HaLightPanelSidebarDiscoverView(hass))
     hass.http.register_view(HaLightPanelAssetView())
     hass.data[DOMAIN]["_assets_registered"] = True
 
@@ -106,9 +108,21 @@ async def _probe_upstream(hass: HomeAssistant, upstream: str) -> dict:
             if response.status not in {200, 503}:
                 return {"reachable": False, "detail": f"HTTP {response.status}"}
             payload = await response.json(content_type=None)
-            if not isinstance(payload, dict) or "pollMs" not in payload:
+            # v0.5.0 and newer identify themselves explicitly. The legacy
+            # shape is kept as a migration bridge so updating the HACS
+            # integration before a separately deployed panel does not make an
+            # otherwise working installation disappear from the sidebar.
+            legacy_signature = isinstance(payload, dict) and {"haUrl", "pollMs"} <= payload.keys()
+            if not isinstance(payload, dict) or (
+                payload.get("service") != "ha_light_panel" and not legacy_signature
+            ):
                 return {"reachable": False, "detail": "This is not an HA Light Panel service."}
-            return {"reachable": True, "detail": "Panel service is reachable."}
+            return {
+                "reachable": True,
+                "detail": "Panel service is reachable.",
+                "name": str(payload.get("name") or "HA Light Panel (legacy)"),
+                "version": str(payload.get("version") or ""),
+            }
     except (ClientError, TimeoutError, ValueError) as err:
         return {"reachable": False, "detail": str(err) or "Connection failed."}
 
@@ -141,6 +155,50 @@ def _addon_candidates(hass: HomeAssistant) -> list[dict[str, str]]:
                 }
             )
     return candidates
+
+
+def _local_candidates(hass: HomeAssistant) -> list[dict[str, str]]:
+    """Build non-scanning candidates from HA's own local URL configuration."""
+    candidates = [{"label": "Same host as Home Assistant", "url": DEFAULT_UPSTREAM}]
+    seen = {DEFAULT_UPSTREAM}
+    for configured_url in (
+        getattr(hass.config, "internal_url", None),
+        getattr(hass.config, "external_url", None),
+    ):
+        parsed = urlparse(configured_url or "")
+        if not parsed.hostname:
+            continue
+        host = parsed.hostname
+        if ":" in host:
+            host = f"[{host}]"
+        candidate = f"http://{host}:8890"
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        candidates.append({"label": "Home Assistant host on port 8890", "url": candidate})
+    return candidates
+
+
+async def _discover_panels(hass: HomeAssistant) -> list[dict[str, str]]:
+    """Probe known local addresses and return only positively identified panels."""
+    candidates = _local_candidates(hass) + _addon_candidates(hass)
+    # A user can reach the same host through several configured URLs. Avoid
+    # duplicate probes and deliberately do not scan a LAN or arbitrary subnet.
+    unique = {candidate["url"]: candidate for candidate in candidates}
+    probes = await asyncio.gather(
+        *(_probe_upstream(hass, candidate["url"]) for candidate in unique.values())
+    )
+    found = []
+    for candidate, probe in zip(unique.values(), probes, strict=True):
+        if probe["reachable"]:
+            found.append(
+                {
+                    **candidate,
+                    "name": probe.get("name", "HA Light Panel"),
+                    "version": probe.get("version", ""),
+                }
+            )
+    return found
 
 
 class HaLightPanelSidebarStatusView(HomeAssistantView):
@@ -204,6 +262,22 @@ class HaLightPanelSidebarStatusView(HomeAssistantView):
         return web.json_response(
             {"saved": True, "restart_required": True, "upstream": upstream}
         )
+
+
+class HaLightPanelSidebarDiscoverView(HomeAssistantView):
+    """Find a live, locally reachable HA Light Panel without network scanning."""
+
+    requires_auth = True
+    url = f"{INGRESS_PATH}/sidebar-discover"
+    name = "api:ha_light_panel:sidebar_discover"
+
+    def __init__(self, hass: HomeAssistant) -> None:
+        self.hass = hass
+
+    @require_admin
+    async def post(self, _request: web.Request) -> web.Response:
+        """Return known local candidates that identify themselves as this panel."""
+        return web.json_response({"panels": await _discover_panels(self.hass)})
 
 
 class HaLightPanelProxyView(HomeAssistantView):

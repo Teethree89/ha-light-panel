@@ -42,9 +42,11 @@ remain useful when you prefer the panel without the HA chrome.
 ### First-time connection help
 
 If the sidebar cannot open the panel, it shows the exact URL Home Assistant is
-currently using and a **Connect panel** form. It checks the service before
-embedding it, so an unavailable panel produces instructions instead of a blank
-page.
+currently using and a **Connect panel** form. **Find panel address** probes
+only safe local candidates (the same host, Home Assistant's configured local
+hostname, and a detected HAOS add-on) and lists only services that identify as
+**HA Light Panel**. It checks the service before embedding it, so an
+unavailable panel produces instructions instead of a blank page.
 
 - **Systemd or Docker on the same host as Home Assistant:** use
   `http://127.0.0.1:8890`.

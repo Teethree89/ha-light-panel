@@ -82,6 +82,25 @@ class HaLightPanelSidebar extends HTMLElement {
     } finally { this._busy = false; this._render(); }
   }
 
+  async _findPanels() {
+    if (!this._hass || this._busy) return;
+    this._busy = true;
+    this._message = "Looking for a running HA Light Panel service…";
+    this._render();
+    try {
+      const result = await this._hass.callApi("POST", "ha_light_panel/sidebar-discover", {});
+      const panels = result.panels || [];
+      this._status = { ...(this._status || {}), candidates: panels };
+      this._connection = "unavailable";
+      this._message = panels.length
+        ? `Found ${panels.length} ${panels.length === 1 ? "HA Light Panel service" : "HA Light Panel services"}. Choose one below.`
+        : "No HA Light Panel service answered on this Home Assistant host or its detected add-on address.";
+    } catch (_error) {
+      this._connection = "unavailable";
+      this._message = "Panel discovery could not run. Enter the panel address manually.";
+    } finally { this._busy = false; this._render(); }
+  }
+
   _select(tab) { this._tab = tab; if (tab !== "links") this._beginCheck(); this._render(); if (tab !== "links") this._checkPanel(); }
   _navigate(path) { window.history.pushState(null, "", path); window.dispatchEvent(new CustomEvent("location-changed", { detail: { replace: false } })); }
   _copy(value) { navigator.clipboard.writeText(value).then(() => { this._message = "Link copied to the clipboard."; this._render(); }).catch(() => window.prompt("Copy this link:", value)); }
@@ -89,8 +108,8 @@ class HaLightPanelSidebar extends HTMLElement {
   _setupBody() {
     const status = this._status || {};
     const defaultUrl = status.upstream || status.default_upstream || "http://127.0.0.1:8890";
-    const candidates = (status.candidates || []).map((candidate) => `<button type="button" class="candidate" data-use-url="${this._escape(candidate.url)}"><strong>${this._escape(candidate.label)}</strong><code>${this._escape(candidate.url)}</code></button>`).join("");
-    return `<div class="status"><div class="status-card"><h2>${this._connection === "checking" ? "Connecting…" : "Connect HA Light Panel"}</h2><p>${this._escape(this._message)}</p>${this._connection === "checking" ? "" : `<ol><li>Make sure the <strong>HA Light Panel</strong> add-on, Docker container, or systemd service is running.</li><li>Choose its address below. For a panel on the same host as Home Assistant, the default is correct.</li><li>Select <strong>Connect panel</strong>. If you replace an existing address, restart Home Assistant when asked.</li></ol>${candidates ? `<div class="candidates"><label>Detected on this Home Assistant</label>${candidates}</div>` : ""}<label class="input-label">Panel service address<input data-upstream value="${this._escape(defaultUrl)}" spellcheck="false" placeholder="http://127.0.0.1:8890"></label><div class="actions"><button type="button" data-save ${this._busy ? "disabled" : ""}>Connect panel</button><button type="button" class="secondary" data-integrations>Open Integrations</button></div><p class="hint">Running the panel on another machine? Replace the host with that machine’s LAN IP or hostname, such as <code>http://192.168.1.50:8890</code>.</p>`}</div></div>`;
+    const candidates = (status.candidates || []).map((candidate) => `<button type="button" class="candidate" data-use-url="${this._escape(candidate.url)}"><strong>${this._escape(candidate.name || candidate.label || "HA Light Panel")}${candidate.version ? ` · ${this._escape(candidate.version)}` : ""}</strong><code>${this._escape(candidate.url)}</code></button>`).join("");
+    return `<div class="status"><div class="status-card"><h2>${this._connection === "checking" ? "Connecting…" : "Connect HA Light Panel"}</h2><p>${this._escape(this._message)}</p>${this._connection === "checking" ? "" : `<ol><li>Make sure the <strong>HA Light Panel</strong> add-on, Docker container, or systemd service is running.</li><li>Use <strong>Find panel address</strong> to test this HA host and any detected HAOS add-on, or enter an address yourself.</li><li>Select <strong>Connect panel</strong>. If you replace an existing address, restart Home Assistant when asked.</li></ol>${candidates ? `<div class="candidates"><label>Verified HA Light Panel services</label>${candidates}</div>` : ""}<label class="input-label">Panel service address<input data-upstream value="${this._escape(defaultUrl)}" spellcheck="false" placeholder="http://127.0.0.1:8890"></label><div class="actions"><button type="button" class="secondary" data-find ${this._busy ? "disabled" : ""}>Find panel address</button><button type="button" data-save ${this._busy ? "disabled" : ""}>Connect panel</button><button type="button" class="secondary" data-integrations>Open Integrations</button></div><p class="hint">Running the panel on another machine? Replace the host with that machine’s LAN IP or hostname, such as <code>http://192.168.1.50:8890</code>.</p>`}</div></div>`;
   }
 
   _linksBody() {
@@ -113,6 +132,7 @@ class HaLightPanelSidebar extends HTMLElement {
     this.shadowRoot.querySelectorAll("[data-tab]").forEach((button) => button.addEventListener("click", () => this._select(button.dataset.tab)));
     this.shadowRoot.querySelectorAll("[data-copy]").forEach((button) => button.addEventListener("click", () => this._copy(button.dataset.copy)));
     const save = this.shadowRoot.querySelector("[data-save]"); if (save) save.addEventListener("click", () => this._saveUpstream());
+    const find = this.shadowRoot.querySelector("[data-find]"); if (find) find.addEventListener("click", () => this._findPanels());
     this.shadowRoot.querySelectorAll("[data-use-url]").forEach((button) => button.addEventListener("click", () => { const input = this.shadowRoot.querySelector("[data-upstream]"); if (input) input.value = button.dataset.useUrl; }));
     const integrations = this.shadowRoot.querySelector("[data-integrations]"); if (integrations) integrations.addEventListener("click", () => this._navigate("/config/integrations"));
   }
