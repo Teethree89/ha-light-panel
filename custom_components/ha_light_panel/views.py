@@ -4,14 +4,16 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from urllib.parse import urlparse
 
 from aiohttp import ClientError, ClientTimeout, web
 
-from homeassistant.components.http import HomeAssistantView
+from homeassistant.components.http import HomeAssistantView, require_admin
+from homeassistant.config_entries import SOURCE_USER
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from .const import ASSET_URL_BASE, DOMAIN, INGRESS_PATH
+from .const import ASSET_URL_BASE, CONF_UPSTREAM, DEFAULT_UPSTREAM, DOMAIN, INGRESS_PATH
 
 LOGGER = logging.getLogger(__name__)
 FRONTEND_ROOT = Path(__file__).parent / "frontend"
@@ -47,6 +49,7 @@ def async_register_assets(hass: HomeAssistant) -> None:
     """Register static integration assets before the sidebar module loads."""
     if hass.data.setdefault(DOMAIN, {}).get("_assets_registered"):
         return
+    hass.http.register_view(HaLightPanelSidebarStatusView(hass))
     hass.http.register_view(HaLightPanelAssetView())
     hass.data[DOMAIN]["_assets_registered"] = True
 
@@ -73,6 +76,133 @@ class HaLightPanelAssetView(HomeAssistantView):
                 "Cache-Control": "no-cache",
                 "Content-Type": self._content_types[filename],
             },
+        )
+
+
+def _entry(hass: HomeAssistant):
+    """Return the single configured panel entry, if there is one."""
+    entries = hass.config_entries.async_entries(DOMAIN)
+    return entries[0] if entries else None
+
+
+def _valid_upstream(value: object) -> str | None:
+    """Accept only a complete HTTP(S) URL from the admin setup form."""
+    upstream = str(value or "").strip().rstrip("/")
+    parsed = urlparse(upstream)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return None
+    return upstream
+
+
+async def _probe_upstream(hass: HomeAssistant, upstream: str) -> dict:
+    """Tell setup apart from a panel process that is merely unhealthy in HA."""
+    try:
+        async with async_get_clientsession(hass).get(
+            f"{upstream}/health", timeout=ClientTimeout(total=3)
+        ) as response:
+            # /health is intentionally 503 when the panel is missing an HA
+            # token. That is still a running panel, and its offline builder is
+            # useful, so both documented health codes prove the URL is right.
+            if response.status not in {200, 503}:
+                return {"reachable": False, "detail": f"HTTP {response.status}"}
+            payload = await response.json(content_type=None)
+            if not isinstance(payload, dict) or "pollMs" not in payload:
+                return {"reachable": False, "detail": "This is not an HA Light Panel service."}
+            return {"reachable": True, "detail": "Panel service is reachable."}
+    except (ClientError, TimeoutError, ValueError) as err:
+        return {"reachable": False, "detail": str(err) or "Connection failed."}
+
+
+def _addon_candidates(hass: HomeAssistant) -> list[dict[str, str]]:
+    """Offer a real Supervisor add-on hostname when HAOS can name one."""
+    try:
+        from homeassistant.components.hassio import get_addons_info  # type: ignore[import-not-found]
+
+        addons = get_addons_info(hass)
+    except Exception:  # noqa: BLE001 - no Supervisor on Container/Core installs
+        return []
+
+    candidates = []
+    for slug, info in addons.items():
+        if not info:
+            continue
+        name = str(info.get("name") or "")
+        if slug.endswith("ha_light_panel") or name == "HA Light Panel":
+            options = info.get("options") or {}
+            port = options.get("port", 8890)
+            candidates.append(
+                {
+                    "label": f"Detected HA Light Panel add-on ({name or slug})",
+                    # Supervisor's DNS name is the add-on slug with valid
+                    # hostname separators; its repo prefix makes the address
+                    # unique even when several third-party add-ons share a
+                    # short name.
+                    "url": f"http://{slug.replace('_', '-')}:{port}",
+                }
+            )
+    return candidates
+
+
+class HaLightPanelSidebarStatusView(HomeAssistantView):
+    """Give the authenticated sidebar an actionable connection diagnosis."""
+
+    requires_auth = True
+    url = f"{INGRESS_PATH}/sidebar-status"
+    name = "api:ha_light_panel:sidebar_status"
+
+    def __init__(self, hass: HomeAssistant) -> None:
+        self.hass = hass
+
+    @require_admin
+    async def get(self, _request: web.Request) -> web.Response:
+        entry = _entry(self.hass)
+        upstream = _valid_upstream(entry.data.get(CONF_UPSTREAM)) if entry else ""
+        probe = await _probe_upstream(self.hass, upstream) if upstream else {
+            "reachable": False,
+            "detail": "The integration has not been configured yet.",
+        }
+        return web.json_response(
+            {
+                "configured": entry is not None,
+                "upstream": upstream,
+                "entry_state": str(entry.state) if entry else "not_configured",
+                "reachable": probe["reachable"],
+                "detail": probe["detail"],
+                "default_upstream": DEFAULT_UPSTREAM,
+                "candidates": _addon_candidates(self.hass),
+            }
+        )
+
+    @require_admin
+    async def post(self, request: web.Request) -> web.Response:
+        """Create the entry, or save a corrected URL for the next restart."""
+        try:
+            payload = await request.json()
+        except (ValueError, web.HTTPException):
+            raise web.HTTPBadRequest(text="Expected a JSON setup request.\n")
+        upstream = _valid_upstream(payload.get("upstream") if isinstance(payload, dict) else None)
+        if not upstream:
+            raise web.HTTPBadRequest(text="Enter a full URL, such as http://127.0.0.1:8890.\n")
+
+        entry = _entry(self.hass)
+        if entry is None:
+            await self.hass.config_entries.flow.async_init(
+                DOMAIN,
+                context={"source": SOURCE_USER},
+                data={CONF_UPSTREAM: upstream},
+            )
+            return web.json_response(
+                {"saved": True, "restart_required": False, "upstream": upstream}
+            )
+
+        self.hass.config_entries.async_update_entry(
+            entry, data={**entry.data, CONF_UPSTREAM: upstream}
+        )
+        # The registered aiohttp proxy captures its upstream address. HA core
+        # has no public API to remove that route, so applying a correction to
+        # an existing entry requires the same restart documented for removal.
+        return web.json_response(
+            {"saved": True, "restart_required": True, "upstream": upstream}
         )
 
 

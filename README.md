@@ -48,7 +48,9 @@ This proxies a panel you are already running; it does not run one. See
 After restarting Home Assistant, the integration also adds an admin-only
 **HA Light Panel** item to the Home Assistant sidebar. It keeps the normal HA
 navigation visible while switching between the panel **Overview** and the
-visual **Builder**. The original direct URLs remain available as well.
+visual **Builder**. Its **Device links** page copies the recommended panel and
+builder URLs for phones, tablets, desktops, and wall displays. The original
+direct URLs remain available as well.
 
 ## Home Assistant OS Add-on
 

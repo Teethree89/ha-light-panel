@@ -39,6 +39,34 @@ The sidebar page is authenticated and keeps the regular Home Assistant
 navigation available. Its **New tab** button, and the direct ingress URLs,
 remain useful when you prefer the panel without the HA chrome.
 
+### First-time connection help
+
+If the sidebar cannot open the panel, it shows the exact URL Home Assistant is
+currently using and a **Connect panel** form. It checks the service before
+embedding it, so an unavailable panel produces instructions instead of a blank
+page.
+
+- **Systemd or Docker on the same host as Home Assistant:** use
+  `http://127.0.0.1:8890`.
+- **Panel on another machine:** use that machine's LAN hostname or IP, for
+  example `http://192.168.1.50:8890`.
+- **HA Light Panel add-on on HAOS/Supervised:** the sidebar detects the
+  Supervisor-assigned add-on hostname and offers it as a one-click choice when
+  the add-on is installed.
+
+Changing an existing upstream address is saved immediately, but requires a
+Home Assistant restart because HA cannot replace a registered HTTP proxy route
+while it is running.
+
+### Links for other devices
+
+The sidebar's **Device links** page has one-click copy buttons for the panel
+overview and builder through the HA proxy. These are the recommended links for
+phones, tablets, desktops, and wall displays because they work anywhere that
+can reach your Home Assistant instance. It also explains whether the direct
+panel address can be used from another device: `127.0.0.1` only works inside
+the HA host, while a LAN hostname/IP can be opened directly.
+
 ## Install manually
 
 Copy `custom_components/ha_light_panel/` into your Home Assistant config
