@@ -190,10 +190,17 @@ the exact built-in Frameo layout as `/opt/ha-light-panel/config.json` rather
 than replacing it with the generic example. Re-run the same command to upgrade. Set
 `INSTALL_AUTOUPDATE=1` before the command to enable the optional daily check.
 
-The HA sidebar **Overview** reports the running version and offers **Update
-panel** when this managed systemd installer is present. The Node process cannot
-run privileged commands: it writes a local request that a root-owned systemd
-path unit consumes.
+The HA sidebar **Overview** detects this managed systemd installation, reports
+live panel and HA-data status, and offers **Update panel now**. The update
+status bar follows the service lifecycle while it restarts; it is deliberately
+not presented as a fake download percentage. The Node process cannot run
+privileged commands: it writes a local request that a root-owned systemd path
+unit consumes.
+
+The same Overview gives the appropriate instructions for a Home Assistant
+add-on, Docker/Compose, and manual/custom-service deployment. Only a detected
+managed systemd updater gets an in-app update button; add-ons, containers, and
+custom hosts remain owned by their respective deployment tools.
 
 From a local checkout, `sudo scripts/install-systemd.sh` performs the same
 install. Then edit the environment and config only on first setup:

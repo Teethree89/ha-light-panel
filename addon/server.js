@@ -1882,6 +1882,47 @@ function updateSupport() {
   };
 }
 
+// The dashboard can run from several places.  The process cannot safely
+// inspect the host's init system from inside a container, so only call an
+// install type "detected" when it has an explicit, local signal.  A managed
+// systemd deployment always wins: its installer supplies both of these
+// variables, even when the service has a custom Frameo-era name.
+function installInfo() {
+  const managedSystemd = Boolean(UPDATE_REQUEST_PATH && UPDATE_SERVICE);
+  if (managedSystemd) {
+    return {
+      method: 'systemd',
+      label: 'Managed systemd service',
+      detected: true,
+      detail: `Update service: ${UPDATE_SERVICE}`
+    };
+  }
+  // Home Assistant add-ons receive one of these Supervisor credentials. Do
+  // not return either value; their presence is all the Overview needs.
+  if (process.env.HASSIO_TOKEN || process.env.SUPERVISOR_TOKEN) {
+    return {
+      method: 'supervisor',
+      label: 'Home Assistant add-on',
+      detected: true,
+      detail: 'Managed by the Home Assistant Supervisor'
+    };
+  }
+  if (fs.existsSync('/.dockerenv')) {
+    return {
+      method: 'container',
+      label: 'Docker container',
+      detected: true,
+      detail: 'Managed by the container host'
+    };
+  }
+  return {
+    method: 'manual',
+    label: 'Manual or custom service',
+    detected: false,
+    detail: 'No managed installer was detected by the panel process'
+  };
+}
+
 function localRequest(req) {
   const address = String(req.socket?.remoteAddress || '');
   return address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1';
@@ -6830,7 +6871,8 @@ const server = http.createServer(async (req, res) => {
         lastPollAt,
         lastError,
         pollMs: POLL_MS,
-        update: updateSupport()
+        update: updateSupport(),
+        install: installInfo()
       });
       return;
     }
