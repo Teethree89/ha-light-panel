@@ -157,6 +157,16 @@ browser. **Copy config** and **Download config** export a reviewed
 The builder never writes to Home Assistant or overwrites a running service
 configuration from the browser.
 
+### Configurable native actions
+
+Select **Balance rooms** in the Layout Builder to configure its Home Assistant
+service or script and optional JSON service data. Its action inspector also
+offers checkboxes for the HVAC readiness guard, a confirmation modal, and
+success/failure modals. The readiness guard is enabled by default and is
+enforced by the server as well as the browser. Action and modal settings are
+saved under `panel.layout.nativeCards.btnBalance.action`; the prior
+`panel.actions.assist` remains the fallback for existing configurations.
+
 ## Docker
 
 ```sh

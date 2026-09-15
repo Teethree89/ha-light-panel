@@ -138,9 +138,16 @@ def _addon_candidates(hass: HomeAssistant) -> list[dict[str, str]]:
     except Exception:  # noqa: BLE001 - no Supervisor on Container/Core installs
         return []
 
+    # Home Assistant Core/systemd installations can expose the hassio helper
+    # while returning None because no Supervisor is attached. Treat that as no
+    # add-ons rather than letting the optional discovery hint break the entire
+    # sidebar status endpoint.
+    if not isinstance(addons, dict):
+        return []
+
     candidates = []
     for slug, info in addons.items():
-        if not info:
+        if not isinstance(info, dict):
             continue
         name = str(info.get("name") or "")
         if slug.endswith("ha_light_panel") or name == "HA Light Panel":
