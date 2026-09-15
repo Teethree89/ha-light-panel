@@ -73,4 +73,4 @@ fi
 echo "Installing $TARGET (currently ${INSTALLED:-unknown})"
 git -C "$SRC_DIR" checkout --quiet "$TARGET"
 exec env APP_DIR="$APP_DIR" ENV_FILE="$ENV_FILE" SERVICE_NAME="$SERVICE_NAME" SERVICE_USER="$SERVICE_USER" SRC_DIR="$SRC_DIR" \
-  "$SRC_DIR/scripts/install-systemd.sh"
+  bash "$SRC_DIR/scripts/install-systemd.sh"
