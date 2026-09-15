@@ -45,6 +45,11 @@ reachable wherever Home Assistant is.
 This proxies a panel you are already running; it does not run one. See
 [docs/integration.md](https://github.com/Teethree89/ha-light-panel/blob/main/docs/integration.md).
 
+After restarting Home Assistant, the integration also adds an admin-only
+**HA Light Panel** item to the Home Assistant sidebar. It keeps the normal HA
+navigation visible while switching between the panel **Overview** and the
+visual **Builder**. The original direct URLs remain available as well.
+
 ## Home Assistant OS Add-on
 
 The easiest install path if you're running Home Assistant OS or Supervised:

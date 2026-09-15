@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 from aiohttp import ClientError, ClientTimeout, web
 
@@ -10,9 +11,10 @@ from homeassistant.components.http import HomeAssistantView
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from .const import DOMAIN, INGRESS_PATH
+from .const import ASSET_URL_BASE, DOMAIN, INGRESS_PATH
 
 LOGGER = logging.getLogger(__name__)
+FRONTEND_ROOT = Path(__file__).parent / "frontend"
 
 # Hop-by-hop headers (and a few aiohttp manages itself) must not be relayed.
 _SKIP_REQUEST_HEADERS = {
@@ -36,8 +38,42 @@ def async_register_views(hass: HomeAssistant, upstream: str) -> None:
     """Register the browser-facing reverse-proxy view (once)."""
     if hass.data.setdefault(DOMAIN, {}).get("_view_registered"):
         return
+    async_register_assets(hass)
     hass.http.register_view(HaLightPanelProxyView(hass, upstream))
     hass.data[DOMAIN]["_view_registered"] = True
+
+
+def async_register_assets(hass: HomeAssistant) -> None:
+    """Register static integration assets before the sidebar module loads."""
+    if hass.data.setdefault(DOMAIN, {}).get("_assets_registered"):
+        return
+    hass.http.register_view(HaLightPanelAssetView())
+    hass.data[DOMAIN]["_assets_registered"] = True
+
+
+class HaLightPanelAssetView(HomeAssistantView):
+    """Serve the HA sidebar module without proxying it to the panel server."""
+
+    requires_auth = False
+    url = f"{ASSET_URL_BASE}/{{filename}}"
+    name = "api:ha_light_panel:assets"
+
+    _content_types = {"ha-light-panel-sidebar.js": "application/javascript"}
+
+    async def get(self, _request: web.Request, filename: str) -> web.FileResponse:
+        """Return an allow-listed frontend asset."""
+        if filename not in self._content_types:
+            raise web.HTTPNotFound()
+        asset = FRONTEND_ROOT / filename
+        if not asset.is_file():
+            raise web.HTTPNotFound(text=f"Missing frontend asset: {filename}\n")
+        return web.FileResponse(
+            asset,
+            headers={
+                "Cache-Control": "no-cache",
+                "Content-Type": self._content_types[filename],
+            },
+        )
 
 
 class HaLightPanelProxyView(HomeAssistantView):

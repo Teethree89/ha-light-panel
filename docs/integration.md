@@ -26,6 +26,19 @@ relative link works both on the LAN and remotely.
 
 The panel is then at `https://<your-ha>/api/ha_light_panel/`.
 
+## Sidebar navigation
+
+After the restart, admins will see **HA Light Panel** in the Home Assistant
+sidebar. Its internal navigation provides two pages:
+
+- **Overview** embeds the lightweight panel at `/api/ha_light_panel/`.
+- **Builder** embeds the visual Lovelace card builder at
+  `/api/ha_light_panel/builder`.
+
+The sidebar page is authenticated and keeps the regular Home Assistant
+navigation available. Its **New tab** button, and the direct ingress URLs,
+remain useful when you prefer the panel without the HA chrome.
+
 ## Install manually
 
 Copy `custom_components/ha_light_panel/` into your Home Assistant config
