@@ -32,7 +32,7 @@ After the restart, admins will see **HA Light Panel** in the Home Assistant
 sidebar. Its internal navigation provides two pages:
 
 - **Overview** embeds the lightweight panel at `/api/ha_light_panel/`.
-- **Builder** embeds the visual Lovelace card builder at
+- **Builder** embeds the visual SVG panel layout builder at
   `/api/ha_light_panel/builder`.
 
 The sidebar page is authenticated and keeps the regular Home Assistant

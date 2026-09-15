@@ -13,7 +13,7 @@ If this saves you a little time, [buy me a coffee](https://paypal.me/ABPaintball
 ## Features
 
 - Lightweight climate dashboard with six room cards
-- Desktop visual card builder with Lovelace YAML import/export
+- Desktop visual SVG panel layout builder with native config export
 - Compact SVG UI, no frontend framework
 - Landscape kiosk layout that reflows for portrait phones
 - Home Assistant REST polling
@@ -134,25 +134,25 @@ Open:
 http://localhost:8890/
 ```
 
-## Visual Card Builder
+## Visual Panel Layout Builder
 
 Open the builder from a desktop browser at one of these URLs:
 
 - Direct Node, Docker, or add-on install: `http://<panel-server>:8890/builder`
 - Through the optional HA Light Panel HACS integration: `https://<your-ha-url>/api/ha_light_panel/builder`
 
-Add common Lovelace card types, select a card to edit its entity and title, and
-adjust its width on the visual canvas. When the panel has a working `HA_URL`
-and `HA_TOKEN`, Entity ID fields also offer every Home Assistant entity by ID
-and friendly name. Without those credentials, the builder remains a useful
-offline composer: add cards manually or paste existing dashboard YAML (a
-single card, a `cards:` list, or a whole dashboard) to bring common card
-settings into the builder.
+The builder loads the panel's current room cards and native layout metadata.
+Add room, entity-value, or text cards; bind entity state or attributes; then
+drag, resize, duplicate, and style them with colours and font sizes. Canvas
+presets cover common landscape and portrait displays. Portrait mode can stack
+cards automatically or keep a separately adjusted portrait layout.
 
-The builder saves its draft only in that browser. **Copy YAML** puts a
-`cards:` block on your clipboard, while **Download** saves it as a YAML file;
-paste either result into a Home Assistant dashboard in Edit mode. It never
-writes to Home Assistant or changes the panel's `config.json`.
+When the panel has a working `HA_URL` and `HA_TOKEN`, Entity ID fields offer
+every Home Assistant entity by ID and friendly name. The draft stays in the
+browser. **Copy config** and **Download config** export a reviewed
+`config.json`; install that file and restart the panel service to apply it.
+The builder never writes to Home Assistant or overwrites a running service
+configuration from the browser.
 
 ## Docker
 

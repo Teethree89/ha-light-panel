@@ -414,6 +414,8 @@ function withoutDeploymentSections(config) {
   return clone;
 }
 
+let FILE_CONFIG = {};
+
 function loadConfig() {
   let fileConfig = {};
   if (fs.existsSync(CONFIG_PATH)) {
@@ -428,6 +430,10 @@ function loadConfig() {
   } else {
     console.log(`No config at ${CONFIG_PATH}; using built-in defaults.`);
   }
+  // Retain the user-authored shape separately from the merged runtime
+  // configuration. The visual layout editor exports this version, so it never
+  // leaks reference-house defaults into a user's config file.
+  FILE_CONFIG = structuredClone(fileConfig);
   const base = Object.keys(fileConfig).length
     ? withoutDeploymentSections(DEFAULT_CONFIG)
     : DEFAULT_CONFIG;
@@ -1172,6 +1178,61 @@ function comfortSummary() {
   };
 }
 
+function layoutNumber(value, fallback, minimum, maximum) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return fallback;
+  return Math.max(minimum, Math.min(maximum, numeric));
+}
+
+function layoutColor(value, fallback) {
+  const color = String(value || '');
+  return /^#[0-9a-f]{6}$/i.test(color) ? color : fallback;
+}
+
+function configuredLayoutCards() {
+  const layout = PANEL.layout || {};
+  const cards = Array.isArray(layout.cards) ? layout.cards : [];
+  return cards.slice(0, 30).map((card, index) => ({
+    id: String(card.id || `layout-${index}`).replace(/[^a-zA-Z0-9_-]/g, '-'),
+    type: card.type === 'text' ? 'text' : 'entity',
+    title: String(card.title || 'Panel card'),
+    entity: card.entity || '',
+    attribute: card.attribute || '',
+    subEntity: card.subEntity || '',
+    subAttribute: card.subAttribute || '',
+    content: String(card.content || ''),
+    x: layoutNumber(card.x, 780, 0, 1240),
+    y: layoutNumber(card.y, 90 + index * 145, 0, 760),
+    w: layoutNumber(card.w, 220, 70, 500),
+    h: layoutNumber(card.h, 132, 48, 500),
+    background: layoutColor(card.background, '#102131'),
+    accent: layoutColor(card.accent, '#38bdf8'),
+    textColor: layoutColor(card.textColor, '#ffffff'),
+    titleSize: layoutNumber(card.titleSize, 18, 8, 48),
+    valueSize: layoutNumber(card.valueSize, 38, 10, 96),
+    portrait: isPlainObject(card.portrait) ? card.portrait : {}
+  }));
+}
+
+function layoutCardSummary() {
+  return configuredLayoutCards().map(card => ({
+    id: card.id,
+    value: card.type === 'text' ? card.content : specText({ entity: card.entity, attribute: card.attribute }, '--'),
+    secondary: card.type === 'text' ? '' : specText({ entity: card.subEntity, attribute: card.subAttribute }, '')
+  }));
+}
+
+function layoutCardMarkup() {
+  return configuredLayoutCards().map(card => `
+    <g id="layoutCard-${escapeHtml(card.id)}" class="layout-card" transform="translate(${card.x} ${card.y})">
+      <rect width="${card.w}" height="${card.h}" rx="8" fill="${card.background}" stroke="rgba(255,255,255,0.12)"/>
+      <rect width="${card.w}" height="4" rx="2" fill="${card.accent}"/>
+      <text x="18" y="${Math.min(card.h - 28, 34)}" fill="${card.textColor}" font-size="${card.titleSize}" font-weight="700">${escapeHtml(card.title)}</text>
+      <text id="layoutValue-${escapeHtml(card.id)}" x="18" y="${Math.min(card.h - 10, Math.max(62, card.titleSize + card.valueSize + 18))}" fill="${card.textColor}" font-size="${card.valueSize}" font-weight="850">--</text>
+      <text id="layoutSecondary-${escapeHtml(card.id)}" x="18" y="${card.h - 14}" fill="rgba(248,250,252,0.68)" font-size="${Math.max(10, Math.round(card.titleSize * 0.75))}" font-weight="650"></text>
+    </g>`).join('');
+}
+
 function dashboardState() {
   const metrics = PANEL.metrics || {};
   const thermostats = PANEL.thermostats || {};
@@ -1224,7 +1285,8 @@ function dashboardState() {
     alarmPanel: alarmPanelSummary(),
     rooms,
     sock: status,
-    settings: settingsSummary()
+    settings: settingsSummary(),
+    layoutCards: layoutCardSummary()
   };
 }
 
@@ -2294,6 +2356,7 @@ function clientHtml(ib = '') {
 ${navButtonsMarkup()}
     </g>
 
+${layoutCardMarkup()}
     <text id="connection" x="1254" y="792" text-anchor="end" class="tiny">connecting</text>
   </svg>
 
@@ -2356,6 +2419,7 @@ ${navButtonsMarkup()}
     };
 
     const roomNodes = Array.from({ length: 6 }, (_, index) => ({
+      group: document.getElementById('roomCard' + index),
       fill: document.getElementById('roomFill' + index),
       dot: document.getElementById('roomDot' + index),
       name: document.getElementById('roomName' + index),
@@ -2371,6 +2435,32 @@ ${navButtonsMarkup()}
       miniCompressor: document.getElementById('roomMiniCompressor' + index),
       extra: document.getElementById('roomExtra' + index)
     }));
+    const roomLayout = ${jsValue((PANEL.layout || {}).roomCards || {})};
+    const layoutCardsConfig = ${jsValue(configuredLayoutCards())};
+    const layoutResponsive = ${jsValue((PANEL.layout || {}).canvas?.responsive || 'auto')};
+
+    // The editor stores native room-card styling by room id. It intentionally
+    // leaves the dynamic heat/cool dot alone, while geometry, font sizes, and
+    // the base card colour become part of the live SVG dashboard.
+    function applyConfiguredRoomLayout() {
+      if (portraitMedia && portraitMedia.matches) return;
+      (dataRooms || []).forEach((room, index) => {
+        const style = roomLayout[room.id];
+        const node = roomNodes[index];
+        if (!style || !node) return;
+        const x = Number(style.x), y = Number(style.y), w = Number(style.w), h = Number(style.h);
+        if (Number.isFinite(x) && Number.isFinite(y) && node.group) node.group.setAttribute('transform', 'translate(' + x + ' ' + y + ')');
+        if (Number.isFinite(w) && w >= 70 && node.fill) {
+          node.fill.setAttribute('width', String(w));
+          if (node.dot) node.dot.setAttribute('cx', String(Math.max(24, w - 36)));
+        }
+        if (Number.isFinite(h) && h >= 48 && node.fill) node.fill.setAttribute('height', String(h));
+        if (node.fill && /^#[0-9a-f]{6}$/i.test(String(style.background || ''))) node.fill.dataset.panelBackground = style.background;
+        if (node.name && Number.isFinite(Number(style.titleSize))) node.name.setAttribute('font-size', String(style.titleSize));
+        if (node.temp && Number.isFinite(Number(style.valueSize))) node.temp.setAttribute('font-size', String(style.valueSize));
+      });
+    }
+    const dataRooms = ${jsValue((PANEL.rooms || []).map(room => ({ id: room.id || '' })))};
 
     const modeColors = {
       heat: ['#fb923c', '#b91c1c'],
@@ -2626,6 +2716,45 @@ ${navButtonsMarkup()}
       }
     }
 
+    function applyLayoutCards(cards) {
+      (cards || []).forEach(card => {
+        const value = document.getElementById('layoutValue-' + card.id);
+        const secondary = document.getElementById('layoutSecondary-' + card.id);
+        setText(value, card.value || '--');
+        setText(secondary, card.secondary || '');
+      });
+    }
+
+    function applyLayoutCardsGeometry(portrait) {
+      let nextY = 2050;
+      layoutCardsConfig.forEach(card => {
+        const group = document.getElementById('layoutCard-' + card.id);
+        if (!group) return;
+        const customPortrait = layoutResponsive === 'custom' && card.portrait && Number.isFinite(Number(card.portrait.x));
+        const box = portrait
+          ? customPortrait
+            ? { ...card.portrait, y: 2050 + Number(card.portrait.y || 0) }
+            : { x: 32, y: nextY, w: 456, h: Math.max(88, Math.min(150, Number(card.h) || 132)) }
+          : card;
+        const x = Number(box.x), y = Number(box.y), w = Number(box.w), h = Number(box.h);
+        if (![x, y, w, h].every(Number.isFinite)) return;
+        group.setAttribute('transform', 'translate(' + x + ' ' + y + ')');
+        const rectangles = group.querySelectorAll('rect');
+        if (rectangles[0]) { rectangles[0].setAttribute('width', String(w)); rectangles[0].setAttribute('height', String(h)); }
+        if (rectangles[1]) rectangles[1].setAttribute('width', String(w));
+        const texts = group.querySelectorAll('text');
+        if (texts[0]) texts[0].setAttribute('y', String(Math.min(h - 28, 34)));
+        if (texts[1]) texts[1].setAttribute('y', String(Math.min(h - 10, Math.max(62, Number(card.titleSize) + Number(card.valueSize) + 18))));
+        if (texts[2]) texts[2].setAttribute('y', String(h - 14));
+        if (portrait) nextY = Math.max(nextY, y + h + 16);
+      });
+      if (portrait && layoutCardsConfig.length) {
+        const height = Math.max(2050, nextY + 8);
+        setA(dashSvg, 'viewBox', '0 0 520 ' + height);
+        if (els.connection) { setA(els.connection, 'x', '508'); setA(els.connection, 'y', String(height - 20)); }
+      }
+    }
+
     function applyState(data) {
       appState.latest = data;
       const colors = modeColors[data.mode.type] || modeColors.hold;
@@ -2645,12 +2774,13 @@ ${navButtonsMarkup()}
       setText(els.targetDetail, data.comfort.status + ' | ' + data.mode.detail);
       setText(els.roomsSubtitle, ' • Average ' + temp(data.metrics.averageTemp, 1) + ' | updated ' + compactTime(data.updatedAt));
       setText(els.connection, data.ok ? 'live ' + compactTime(data.updatedAt) : 'error');
+      applyLayoutCards(data.layoutCards);
 
       for (const [index, room] of (data.rooms || []).entries()) {
         const node = roomNodes[index];
         if (!node) continue;
         const color = heatColor(room.temp, data.comfort);
-        node.fill.setAttribute('fill', color.room);
+        node.fill.setAttribute('fill', node.fill.dataset.panelBackground || color.room);
         node.dot.setAttribute('fill', color.fill);
         setText(node.name, room.label || '--');
         setText(node.temp, temp(room.temp, 1));
@@ -2843,7 +2973,11 @@ ${navButtonsMarkup()}
       const subtitle = byId('roomsSubtitle');
       if (subtitle) subtitle.style.display = portrait ? 'none' : '';
       if (portrait) applyPortrait();
-      else restoreLayout();
+      else {
+        restoreLayout();
+        applyConfiguredRoomLayout();
+      }
+      applyLayoutCardsGeometry(portrait);
     }
     if (portraitMedia.addEventListener) portraitMedia.addEventListener('change', applyLayout);
     else if (portraitMedia.addListener) portraitMedia.addListener(applyLayout);
@@ -5569,6 +5703,39 @@ function visualBuilderHtml(ib = '') {
 </html>`;
 }
 
+// The panel editor uses the same calm, desktop-first shell as the original
+// composer, but edits this project's own config model. It deliberately keeps
+// changes in-browser until the owner copies or downloads config.json.
+function panelLayoutBuilderHtml(ib = '') {
+  return String.raw`<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>HA Light Panel · Layout Builder</title>${ingressHeadScript(ib)}
+<style>
+:root{color-scheme:dark;--bg:#09121c;--panel:#101d2a;--panel2:#142537;--line:#294154;--text:#edf5fb;--muted:#91a7b8;--blue:#38bdf8;--mint:#2dd4bf;--danger:#fb7185}*{box-sizing:border-box}body{margin:0;min-width:980px;background:var(--bg);color:var(--text);font:14px/1.45 Inter,ui-sans-serif,system-ui,sans-serif}button,input,select,textarea{font:inherit}button{border:0;border-radius:8px;padding:9px 12px;cursor:pointer;color:#062032;background:var(--blue);font-weight:750}button.secondary{color:var(--text);background:#22384a}button.quiet{color:var(--muted);background:transparent;border:1px solid var(--line)}button.danger{color:#fff;background:#be3450}button:hover{filter:brightness(1.1)}header{height:68px;display:flex;align-items:center;gap:16px;padding:0 24px;border-bottom:1px solid var(--line);background:#0c1722;position:sticky;top:0;z-index:5}.brand{font-size:17px;font-weight:800;white-space:nowrap}.brand small{color:var(--mint);font-weight:700;margin-left:7px}.saved{color:var(--muted);font-size:12px}.header-actions{display:flex;align-items:center;gap:8px;margin-left:auto}main{display:grid;grid-template-columns:235px minmax(550px,1fr) 320px;min-height:calc(100vh - 68px)}aside{padding:19px;background:#0c1722;border-right:1px solid var(--line)}aside.right{border-right:0;border-left:1px solid var(--line)}h2{margin:0 0 12px;font-size:13px;text-transform:uppercase;letter-spacing:.09em;color:var(--muted)}.type-list{display:grid;gap:7px}.type{text-align:left;padding:11px;color:var(--text);background:var(--panel);border:1px solid var(--line)}.type span{display:block;color:var(--muted);font-size:11px;font-weight:500;margin-top:2px}.help{margin-top:22px;padding:13px;color:var(--muted);background:#102131;border:1px solid var(--line);border-radius:10px;font-size:12px}.help strong{color:var(--text)}.workspace{min-width:0;padding:23px}.workspace-title{display:flex;justify-content:space-between;align-items:start;gap:12px;margin-bottom:18px}.workspace-title h1{font-size:22px;margin:0}.workspace-title p{margin:3px 0 0;color:var(--muted)}.canvas-frame{overflow:auto;padding:15px;border:1px dashed #35546a;border-radius:14px;background:#07121d}.canvas{position:relative;margin:auto;min-width:500px;border-radius:9px;overflow:hidden;background:radial-gradient(circle at 18% 12%,#163847,#091720 52%,#050a0f);box-shadow:0 18px 42px #0008}.canvas:before{content:"";position:absolute;inset:0;pointer-events:none;background:linear-gradient(90deg,rgba(56,189,248,.045) 1px,transparent 1px),linear-gradient(rgba(56,189,248,.045) 1px,transparent 1px);background-size:4% 5%;opacity:.6}.card{position:absolute;overflow:visible;min-width:34px;min-height:28px;cursor:grab;touch-action:none}.card.selected .native-card{outline:2px solid var(--blue);outline-offset:3px}.native-card{position:absolute;inset:0;overflow:hidden;border:1px solid rgba(255,255,255,.12);border-radius:8px;background:var(--card-bg,#102131);box-shadow:0 7px 18px #0004;padding:9%}.accent{position:absolute;top:0;left:0;right:0;height:4px;background:var(--accent,#22c55e)}.card-kind{color:var(--accent,#2dd4bf);font-size:7px;font-weight:800;letter-spacing:.12em;text-transform:uppercase}.card-title{margin-top:7%;font-size:var(--title-size,14px);font-weight:700;color:var(--card-text,#eef8ff);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.card-value{margin-top:11%;font-size:var(--value-size,34px);font-weight:850;color:var(--card-text,#fff);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.card-sub{margin-top:3%;font-size:calc(var(--title-size,14px) * .75);color:#a8bdc9;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.card-tools{position:absolute;top:-12px;right:-12px;display:flex;gap:3px;opacity:0;transition:.12s;z-index:2}.card:hover .card-tools,.card.selected .card-tools{opacity:1}.card-tools button{width:25px;height:25px;padding:0;color:#dbeaf4;background:#20384a}.resize{position:absolute;right:-5px;bottom:-5px;width:14px;height:14px;border:2px solid #d9f6ff;border-radius:3px;background:var(--blue);cursor:nwse-resize;z-index:3}.empty{padding:36% 12px;text-align:center;color:var(--muted)}.empty b{display:block;color:var(--text);font-size:17px;margin-bottom:5px}.toolbar{display:flex;gap:7px;align-items:center}.toolbar select{width:auto}.field{display:grid;gap:5px;margin-bottom:12px}.field-row{display:grid;grid-template-columns:1fr 1fr;gap:9px}.section{margin:19px 0 10px;padding-top:14px;border-top:1px solid var(--line);color:var(--mint);font-size:11px;font-weight:800;letter-spacing:.08em;text-transform:uppercase}label{color:var(--muted);font-size:12px;font-weight:650}input,select,textarea{width:100%;padding:9px 10px;color:var(--text);background:#101f2d;border:1px solid var(--line);border-radius:7px;outline:none}input:focus,select:focus,textarea:focus{border-color:var(--blue)}.inspector-empty{margin-top:45px;color:var(--muted);text-align:center}.card-actions{display:flex;gap:7px;margin-top:17px;flex-wrap:wrap}.tiny{color:var(--muted);font-size:11px;line-height:1.45}.mode-toggle{display:flex;gap:5px}.mode-toggle button{padding:6px 8px;font-size:11px}.mode-toggle button.active{color:#062032;background:var(--mint)}@media(max-width:1120px){main{grid-template-columns:205px minmax(480px,1fr) 285px}.workspace{padding:15px}aside{padding:14px}}
+</style></head><body>
+<header><div class="brand">HA Light Panel <small>Layout Builder</small></div><div class="saved" id="saved">Loading your panel layout…</div><div class="header-actions"><button class="secondary" id="reload">Load current panel</button><button class="secondary" id="copy">Copy config</button><button id="download">Download config</button></div></header>
+<main><aside><h2>Add to panel</h2><div class="type-list" id="types"></div><div class="help"><strong>Your native SVG workspace.</strong><br>Cards are stored as panel configuration, not Lovelace YAML. Drag or resize on the canvas, then download the edited <code>config.json</code>. Nothing changes on the live panel until you install that file and restart the service.</div></aside><section class="workspace"><div class="workspace-title"><div><h1>Design your panel</h1><p>Current room cards load first. Add bound entity cards or text, then customize each layout.</p></div><div class="toolbar"><select id="preset" aria-label="Canvas size"></select><div class="mode-toggle"><button class="active" data-mode="landscape">Landscape</button><button data-mode="portrait">Portrait</button></div></div></div><div class="canvas-frame"><div id="canvas" class="canvas"></div></div></section><aside class="right"><h2>Inspector</h2><div id="inspector"></div></aside></main><datalist id="entityChoices"></datalist>
+<script>(function(){
+var presets=[{id:'frameo',name:'Frameo / 1280 × 800',w:1280,h:800},{id:'tablet',name:'Tablet / 1920 × 1200',w:1920,h:1200},{id:'wide',name:'Widescreen / 1920 × 1080',w:1920,h:1080},{id:'portrait',name:'Portrait tablet / 800 × 1280',w:800,h:1280}];
+var types=[{type:'room',label:'Room card',hint:'Native temperature, humidity, and battery card'},{type:'entity',label:'Entity card',hint:'A titled value bound to any Home Assistant entity'},{type:'text',label:'Text card',hint:'A title or fixed message in your panel style'}];
+var draft={canvas:{preset:'frameo',w:1280,h:800,responsive:'auto'},cards:[]},sourceConfig={},entityChoices=[],selectedId='',mode='landscape',drag=null;
+var $=function(id){return document.getElementById(id)};function uid(){return 'panel-'+Date.now().toString(36)+Math.random().toString(36).slice(2,7)}function clone(v){return JSON.parse(JSON.stringify(v||{}))}function esc(v){var d=document.createElement('div');d.textContent=String(v||'');return d.innerHTML}function number(v,fallback){var n=Number(v);return Number.isFinite(n)?n:fallback}function specParts(spec){if(typeof spec==='string')return{entity:spec,attribute:''};if(spec&&typeof spec==='object')return{entity:spec.entity||'',attribute:spec.attribute||''};return{entity:'',attribute:''}}function spec(entity,attribute){return attribute?{entity:entity,attribute:attribute}:entity}
+function roomCard(room,index,style){var temp=specParts(room.temp);var hum=specParts(room.humidity);style=style||{};var pos=[[24,94],[275,94],[526,94],[24,313],[275,313],[526,313]][index]||[24+(index%3)*251,94+Math.floor(index/3)*219];return{id:room.id||uid(),kind:'room',title:room.label||'Room',entity:temp.entity,attribute:temp.attribute,subEntity:hum.entity,subAttribute:hum.attribute,battery:specParts(room.battery).entity,x:number(style.x,pos[0]),y:number(style.y,pos[1]),w:number(style.w,226),h:number(style.h,208),background:style.background||'#102131',accent:style.accent||'#22c55e',textColor:style.textColor||'#ffffff',titleSize:number(style.titleSize,18),valueSize:number(style.valueSize,52),base:clone(room),portrait:clone(style.portrait)}}
+function normalizeCustom(card,index){var pos=[780,90+index*155];return{id:card.id||uid(),kind:card.type==='text'?'text':'entity',title:card.title||'New card',entity:card.entity||'',attribute:card.attribute||'',subEntity:card.subEntity||'',subAttribute:card.subAttribute||'',content:card.content||'',x:number(card.x,pos[0]),y:number(card.y,pos[1]),w:number(card.w,220),h:number(card.h,132),background:card.background||'#102131',accent:card.accent||'#38bdf8',textColor:card.textColor||'#ffffff',titleSize:number(card.titleSize,18),valueSize:number(card.valueSize,38),portrait:clone(card.portrait)}}
+function newCard(kind){var i=draft.cards.length;var card={id:uid(),kind:kind,title:kind==='room'?'New room':kind==='text'?'Panel note':'Entity value',entity:'',attribute:'',subEntity:'',subAttribute:'',content:kind==='text'?'Add your message':'',battery:'',x:800,y:90+(i%4)*145,w:220,h:132,background:'#102131',accent:kind==='text'?'#a78bfa':'#38bdf8',textColor:'#ffffff',titleSize:18,valueSize:kind==='text'?24:42,portrait:{}};if(kind==='room'){card.w=226;card.h=208;card.valueSize=52}draft.cards.push(card);selectedId=card.id;commit()}
+function selected(){return draft.cards.find(function(c){return c.id===selectedId})}function activeBox(card){if(mode==='portrait'&&card.portrait&&card.portrait.x!==undefined)return card.portrait;return card}function ensurePortrait(card){if(!card.portrait||card.portrait.x===undefined)card.portrait={x:32,y:42+draft.cards.indexOf(card)*110,w:Math.max(120,draft.canvas.w-64),h:Math.min(card.h,96)};return card.portrait}function setBox(card,key,value){var box=mode==='portrait'&&draft.canvas.responsive==='custom'?ensurePortrait(card):card;box[key]=Math.round(number(value,box[key]))}
+function renderTypes(){$('types').innerHTML=types.map(function(t){return '<button class="type" data-type="'+t.type+'">'+t.label+'<span>'+t.hint+'</span></button>'}).join('')}function values(card){if(card.kind==='text')return card.content||'Add a message';if(card.kind==='room')return card.entity?'72°':'--';return card.entity?'72':'--'}function cardHtml(card){var b=activeBox(card),is=card.id===selectedId,sub=card.kind==='room'?(card.subEntity?'Humidity · '+card.subEntity:'Add humidity binding'):card.kind==='entity'?(card.subEntity||card.attribute||'Home Assistant entity'):'Native SVG text';var style='left:'+(b.x/draft.canvas.w*100)+'%;top:'+(b.y/draft.canvas.h*100)+'%;width:'+(b.w/draft.canvas.w*100)+'%;height:'+(b.h/draft.canvas.h*100)+'%;--card-bg:'+esc(card.background)+';--accent:'+esc(card.accent)+';--card-text:'+esc(card.textColor)+';--title-size:'+number(card.titleSize,18)+'px;--value-size:'+number(card.valueSize,38)+'px';return '<article class="card '+(is?'selected':'')+'" data-id="'+esc(card.id)+'" style="'+style+'"><div class="native-card"><div class="accent"></div><div class="card-kind">'+esc(card.kind==='room'?'Room card':card.kind==='entity'?'Entity card':'Text')+'</div><div class="card-title">'+esc(card.title||'Untitled')+'</div><div class="card-value">'+esc(values(card))+'</div><div class="card-sub">'+esc(sub)+'</div></div><div class="card-tools"><button data-move="up" title="Move earlier">↑</button><button data-move="down" title="Move later">↓</button><button data-remove="yes" title="Delete">×</button></div><i class="resize" data-resize="yes" title="Resize card"></i></article>'}
+function renderCanvas(){var preset=presets.find(function(p){return p.id===draft.canvas.preset})||presets[0];var w=mode==='portrait'&&preset.w>preset.h?preset.h:preset.w,h=mode==='portrait'&&preset.w>preset.h?preset.w:preset.h;draft.canvas.w=w;draft.canvas.h=h;var canvas=$('canvas');canvas.style.width='min(100%, '+w+'px)';canvas.style.aspectRatio=w+' / '+h;canvas.innerHTML=draft.cards.length?draft.cards.map(cardHtml).join(''):'<div class="empty"><b>Your panel canvas is ready.</b>Add a native room, entity, or text card from the left.</div>'}
+function field(label,key,value,kind){var input;if(kind==='select')input='<select data-field="'+key+'"><option value="auto"'+(value==='auto'?' selected':'')+'>Automatic stack</option><option value="custom"'+(value==='custom'?' selected':'')+'>Custom portrait layout</option></select>';else input='<input data-field="'+key+'" '+(key.indexOf('Entity')>0||key==='entity'?'list="entityChoices"':'')+' value="'+esc(value)+'" '+(kind==='color'?'type="color"':'')+'>';return '<div class="field"><label>'+label+input+'</label></div>'}function fieldsRow(a,b){return '<div class="field-row">'+a+b+'</div>'}
+function renderInspector(){var card=selected();if(!card){$('inspector').innerHTML='<div class="inspector-empty">Select a card to edit its native SVG look, size, and entity bindings.</div>';return}var box=activeBox(card);var html=field('Title', 'title',card.title);if(card.kind!=='text')html+=field('Primary entity','entity',card.entity)+field('Primary attribute (optional)','attribute',card.attribute);if(card.kind==='room')html+=field('Humidity entity (optional)','subEntity',card.subEntity)+field('Humidity attribute (optional)','subAttribute',card.subAttribute)+field('Battery entity (optional)','battery',card.battery);if(card.kind==='entity')html+=field('Secondary entity / caption (optional)','subEntity',card.subEntity)+field('Secondary attribute (optional)','subAttribute',card.subAttribute);if(card.kind==='text')html+=field('Text content','content',card.content);html+='<div class="section">Native card style</div>'+fieldsRow(field('Background','background',card.background,'color'),field('Accent','accent',card.accent,'color'))+field('Text color','textColor',card.textColor,'color')+fieldsRow(field('Title font px','titleSize',card.titleSize),field('Value font px','valueSize',card.valueSize))+'<div class="section">'+(mode==='portrait'?'Portrait ':'Landscape ')+'geometry</div>'+fieldsRow(field('X','x',box.x),field('Y','y',box.y))+fieldsRow(field('Width','w',box.w),field('Height','h',box.h));if(mode==='portrait')html+='<div class="section">Responsive behavior</div>'+field('Portrait layout','responsive',draft.canvas.responsive,'select')+'<p class="tiny">Automatic stacks cards for a useful default. Choose Custom portrait layout to drag and resize this card separately for portrait.</p>';html+='<div class="card-actions"><button class="secondary" id="duplicate">Duplicate</button><button class="danger" id="delete">Delete</button></div><p class="tiny">These are panel-native cards. Downloaded config is explicit and safe: install it as <code>config.json</code>, then restart the panel service to apply it.</p>';$('inspector').innerHTML=html}
+function renderPreset(){$('preset').innerHTML=presets.map(function(p){return '<option value="'+p.id+'"'+(draft.canvas.preset===p.id?' selected':'')+'>'+p.name+'</option>'}).join('')}function render(){renderPreset();renderCanvas();renderInspector()}function save(){localStorage.setItem('ha-light-panel-layout-draft-v1',JSON.stringify(draft));$('saved').textContent=draft.cards.length+' native card'+(draft.cards.length===1?'':'s')+' · draft saved locally'}function commit(){save();render()}
+function buildDraft(config){sourceConfig=clone(config||{});var panel=sourceConfig.panel||{};var layout=panel.layout||{};draft.canvas=clone(layout.canvas||draft.canvas);if(!draft.canvas.preset)draft.canvas.preset='frameo';draft.canvas.responsive=draft.canvas.responsive||'auto';var styles=layout.roomCards||{};draft.cards=(panel.rooms||[]).map(function(r,i){return roomCard(r,i,styles[r.id]||{})}).concat((layout.cards||[]).map(normalizeCustom));selectedId=draft.cards[0]?draft.cards[0].id:'';render();save()}
+function exported(){var out=clone(sourceConfig);out.panel=out.panel||{};var old=out.panel.layout||{};var roomStyles={},custom=[];out.panel.rooms=draft.cards.filter(function(c){return c.kind==='room'}).map(function(c){var room=clone(c.base);room.id=c.id;room.label=c.title;room.temp=spec(c.entity,c.attribute);if(c.subEntity)room.humidity=spec(c.subEntity,c.subAttribute);else delete room.humidity;if(c.battery)room.battery=c.battery;else delete room.battery;roomStyles[c.id]={x:c.x,y:c.y,w:c.w,h:c.h,background:c.background,accent:c.accent,textColor:c.textColor,titleSize:number(c.titleSize,18),valueSize:number(c.valueSize,52),portrait:clone(c.portrait||{})};return room});draft.cards.filter(function(c){return c.kind!=='room'}).forEach(function(c){custom.push({id:c.id,type:c.kind,title:c.title,entity:c.entity,attribute:c.attribute,subEntity:c.subEntity,subAttribute:c.subAttribute,content:c.content,x:c.x,y:c.y,w:c.w,h:c.h,background:c.background,accent:c.accent,textColor:c.textColor,titleSize:number(c.titleSize,18),valueSize:number(c.valueSize,38),portrait:clone(c.portrait||{})})});out.panel.layout=Object.assign({},old,{version:1,canvas:clone(draft.canvas),roomCards:roomStyles,cards:custom});return out}
+function copyText(text){if(navigator.clipboard&&navigator.clipboard.writeText)return navigator.clipboard.writeText(text);window.prompt('Copy this configuration:',text);return Promise.resolve()}async function loadRemote(){try{var r=await fetch('/builder/layout',{cache:'no-store'}),p=await r.json();if(!p.ok)throw new Error(p.error||'Could not load panel config');buildDraft(p.config);$('saved').textContent=draft.cards.length+' current panel card'+(draft.cards.length===1?'':'s')+' loaded';}catch(e){$('saved').textContent='Could not load current panel · your local draft remains';}}
+function renderEntityChoices(){$('entityChoices').innerHTML=entityChoices.map(function(x){return '<option value="'+esc(x.id)+'">'+esc(x.name||x.id)+'</option>'}).join('')}async function loadEntities(){try{var r=await fetch('/builder/entities',{cache:'no-store'}),p=await r.json();if(!p.ok)throw new Error();entityChoices=p.entities||[];renderEntityChoices();}catch(_){}}
+$('types').addEventListener('click',function(e){var t=e.target.closest('[data-type]');if(t)newCard(t.dataset.type)});$('canvas').addEventListener('click',function(e){var node=e.target.closest('.card');if(!node)return;var card=draft.cards.find(function(c){return c.id===node.dataset.id});if(!card)return;var action=e.target.closest('[data-remove],[data-move]');var index=draft.cards.indexOf(card);if(action&&action.dataset.remove){draft.cards.splice(index,1);selectedId=draft.cards[0]?draft.cards[0].id:'';commit();return}if(action&&action.dataset.move){var target=action.dataset.move==='up'?index-1:index+1;if(target>=0&&target<draft.cards.length){draft.cards.splice(index,1);draft.cards.splice(target,0,card);commit()}return}selectedId=card.id;render()});$('canvas').addEventListener('pointerdown',function(e){var node=e.target.closest('.card');if(!node||e.target.closest('[data-move],[data-remove]'))return;var card=draft.cards.find(function(c){return c.id===node.dataset.id});if(!card)return;selectedId=card.id;var b=activeBox(card),rect=$('canvas').getBoundingClientRect();drag={card:card,resize:Boolean(e.target.closest('[data-resize]')),startX:e.clientX,startY:e.clientY,x:b.x,y:b.y,w:b.w,h:b.h,scaleX:draft.canvas.w/rect.width,scaleY:draft.canvas.h/rect.height};node.setPointerCapture(e.pointerId);e.preventDefault()});$('canvas').addEventListener('pointermove',function(e){if(!drag)return;var dx=(e.clientX-drag.startX)*drag.scaleX,dy=(e.clientY-drag.startY)*drag.scaleY;if(mode==='portrait'&&draft.canvas.responsive==='auto')draft.canvas.responsive='custom';var box=mode==='portrait'?ensurePortrait(drag.card):drag.card;if(drag.resize){box.w=Math.max(70,Math.round(drag.w+dx));box.h=Math.max(48,Math.round(drag.h+dy))}else{box.x=Math.max(0,Math.round(drag.x+dx));box.y=Math.max(0,Math.round(drag.y+dy))}renderCanvas();renderInspector()});$('canvas').addEventListener('pointerup',function(){if(drag){drag=null;save()}});$('inspector').addEventListener('input',function(e){var card=selected(),key=e.target.dataset.field;if(!card||!key)return;if(key==='responsive'){draft.canvas.responsive=e.target.value;if(key==='responsive'&&e.target.value==='custom')ensurePortrait(card)}else if(['x','y','w','h'].indexOf(key)>=0)setBox(card,key,e.target.value);else card[key]=e.target.value;commit()});$('inspector').addEventListener('click',function(e){var card=selected();if(!card)return;if(e.target.id==='delete'){draft.cards=draft.cards.filter(function(c){return c.id!==card.id});selectedId=draft.cards[0]?draft.cards[0].id:'';commit()}if(e.target.id==='duplicate'){var next=clone(card);next.id=uid();next.x+=18;next.y+=18;draft.cards.splice(draft.cards.indexOf(card)+1,0,next);selectedId=next.id;commit()}});$('preset').onchange=function(){draft.canvas.preset=this.value;commit()};document.querySelectorAll('[data-mode]').forEach(function(b){b.onclick=function(){mode=b.dataset.mode;document.querySelectorAll('[data-mode]').forEach(function(x){x.classList.toggle('active',x===b)});render()}});$('reload').onclick=function(){if(confirm('Reload the live panel config? This replaces the current browser draft.'))loadRemote()};$('copy').onclick=function(){copyText(JSON.stringify(exported(),null,2)+'\n').then(function(){$('saved').textContent='Panel config copied to clipboard'})};$('download').onclick=function(){var blob=new Blob([JSON.stringify(exported(),null,2)+'\n'],{type:'application/json'}),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='ha-light-panel.config.json';a.click();setTimeout(function(){URL.revokeObjectURL(a.href)},0);$('saved').textContent='Panel config downloaded'};renderTypes();renderPreset();render();loadRemote();loadEntities();
+})();</script></body></html>`;
+}
+
 // Optional settings page, mounted at /hvac-settings and reached from the
 // Settings button on the main panel. Everything on it is driven by
 // `panel.settings` in the config: leave that block out (or leave its entities
@@ -6132,7 +6299,20 @@ const server = http.createServer(async (req, res) => {
       send(res, 200, {
         'content-type': 'text/html; charset=utf-8',
         'cache-control': 'no-store'
-      }, visualBuilderHtml(ingressBase));
+      }, panelLayoutBuilderHtml(ingressBase));
+      return;
+    }
+
+    // The editor reads the actual user-authored config rather than the merged
+    // reference defaults used by the runtime. It is intentionally read-only:
+    // a browser can export a reviewed config file, but cannot overwrite a
+    // panel service configuration merely by opening a page.
+    if (req.method === 'GET' && url.pathname === '/builder/layout') {
+      // A service with no config file is still rendering DEFAULT_CONFIG. In
+      // that case expose the effective config so the canvas accurately starts
+      // with the cards the owner can currently see.
+      const editorConfig = Object.keys(FILE_CONFIG).length ? FILE_CONFIG : CONFIG;
+      sendJson(res, 200, { ok: true, config: editorConfig });
       return;
     }
 

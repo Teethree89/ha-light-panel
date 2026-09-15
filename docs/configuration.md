@@ -86,6 +86,61 @@ Values can be plain entities or entity attributes:
 }
 ```
 
+## Visual Layout Builder
+
+Open `/builder` on a desktop to load the current room cards into the visual
+editor. It exports native panel configuration, not Lovelace YAML. The editor
+keeps the existing `panel.rooms` bindings and writes optional visual metadata
+under `panel.layout`:
+
+```json
+{
+  "panel": {
+    "layout": {
+      "version": 1,
+      "canvas": {
+        "preset": "frameo",
+        "w": 1280,
+        "h": 800,
+        "responsive": "auto"
+      },
+      "roomCards": {
+        "living": {
+          "x": 24,
+          "y": 94,
+          "w": 226,
+          "h": 208,
+          "background": "#102131",
+          "titleSize": 18,
+          "valueSize": 52
+        }
+      },
+      "cards": [
+        {
+          "id": "outside",
+          "type": "entity",
+          "title": "Outside",
+          "entity": "sensor.outside_temperature",
+          "x": 780,
+          "y": 90,
+          "w": 220,
+          "h": 132
+        }
+      ]
+    }
+  }
+}
+```
+
+`entity` cards display a state or optional entity attribute; `text` cards
+display fixed text. In landscape, exported room geometry and styling are used
+by the live SVG dashboard, and added entity/text cards render as native SVG
+cards. The existing dashboard still automatically reflows its core controls
+and room cards on portrait devices; added cards stack below it automatically
+unless the editor saves a custom portrait layout. Review the generated file,
+replace your `config.json`, and restart the panel service—there is no browser
+write endpoint.
+
 ## Room Extra Text
 
 Static extra text:
