@@ -41,6 +41,10 @@ remain useful when you prefer the panel without the HA chrome.
 
 ### First-time connection help
 
+If `/api/ha_light_panel/` already opens the panel, no IP address or discovery
+step is needed: the Home Assistant proxy is already configured and the sidebar
+uses that working route first.
+
 If the sidebar cannot open the panel, it shows the exact URL Home Assistant is
 currently using and a **Connect panel** form. **Find panel address** probes
 only safe local candidates (the same host, Home Assistant's configured local

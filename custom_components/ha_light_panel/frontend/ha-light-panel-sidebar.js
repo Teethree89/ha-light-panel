@@ -38,24 +38,27 @@ class HaLightPanelSidebar extends HTMLElement {
     const tab = this._tab;
     this._beginCheck(); this._render();
     try {
-      this._status = await this._hass.callApi("GET", "ha_light_panel/sidebar-status");
-      if (!this._status.configured) {
-        this._connection = "unavailable";
-        this._message = "The HA Light Panel integration has not been connected to a panel service yet.";
-      } else if (!this._status.reachable) {
-        this._connection = "unavailable";
-        this._message = this._status.detail || "Home Assistant cannot reach the configured panel service.";
-      } else {
-        // The proxy route can remain old after an address correction, so check
-        // exactly the ingress page that the iframe is about to load.
-        const response = await fetch(this._target(), { cache: "no-store" });
-        if (!response.ok) throw new Error(`The ingress page responded with ${response.status}`);
+      // The ingress page is the source of truth. An existing proxy may be
+      // healthy even when optional address discovery cannot probe its private
+      // container hostname, and it should never be hidden behind setup UI.
+      const response = await fetch(this._target(), { cache: "no-store" });
+      if (response.ok) {
         this._connection = "ready";
         this._message = "";
+      } else {
+        throw new Error(`The ingress page responded with ${response.status}`);
       }
     } catch (_error) {
-      this._connection = "unavailable";
-      this._message = "The Home Assistant integration is not ready to open this page.";
+      try {
+        this._status = await this._hass.callApi("GET", "ha_light_panel/sidebar-status");
+        this._connection = "unavailable";
+        this._message = !this._status.configured
+          ? "The HA Light Panel integration has not been connected to a panel service yet."
+          : this._status.detail || "The Home Assistant integration is not ready to open this page.";
+      } catch (_statusError) {
+        this._connection = "unavailable";
+        this._message = "The Home Assistant integration is not ready to open this page.";
+      }
     }
     if (tab !== this._tab) return;
     this._render();
