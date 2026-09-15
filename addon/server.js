@@ -593,6 +593,34 @@ async function haRawFetch(apiPath, options = {}) {
   return response;
 }
 
+// A live page that has been open a while is holding an expired token, and it
+// cannot mint its own replacement -- an expired token proves nothing, which is
+// the whole point of expiry. The panel can, because it holds Home Assistant
+// credentials. Prefers the proxy's own browser token: it is scoped to one
+// camera and its TTL slides forward on every use, so a running stream never
+// expires underneath itself. Proxy builds without that route fall back to the
+// camera entity's current access token, correct at the moment it is handed
+// out, which is all a restart needs.
+async function liveViewToken(camera) {
+  const slug = String(camera.slug);
+  try {
+    const payload = await haFetch(
+      `/api/blink_liveview_proxy/cameras/${encodeURIComponent(slug)}/token`
+    );
+    const token = String((payload && payload.token) || '');
+    if (token) {
+      return { token, expiresIn: Number(payload.expires_in) || null };
+    }
+  } catch (error) {
+    // Older proxy, or the proxy is down. The entity attribute still works.
+  }
+
+  // Forced: the throttled poll would hand back the same stale token that sent
+  // the caller here, which is the whole failure this route exists to end.
+  await pollStates(true);
+  return { token: String(attr(camera.liveEntity, 'access_token', '')), expiresIn: null };
+}
+
 async function proxyHaResponse(req, res, apiPath, options = {}) {
   const response = await haRawFetch(apiPath, {
     method: req.method,
@@ -4090,12 +4118,12 @@ function liveHtml(slug, ib = '') {
       <div id="panel" class="panel">
         <div id="spinner" class="spinner"></div>
         <div class="title">${escapeHtml(camera.label)}</div>
-        <div id="status" class="status">${token ? 'Waking camera and waiting for video' : 'Live token unavailable'}</div>
+        <div id="status" class="status">Waking camera and waiting for video</div>
       </div>
     </section>
     <nav class="bottom" aria-label="Live camera controls">
       <button id="back" type="button">Cameras</button>
-      <button id="restart" class="primary" type="button" ${token ? '' : 'disabled'}>Restart</button>
+      <button id="restart" class="primary" type="button">Restart</button>
       <button id="snapshot" type="button">Snapshot</button>
       <button id="clips" class="save" type="button">Clips</button>
       <button id="audio" class="audio" type="button">Audio On</button>
@@ -4119,7 +4147,7 @@ function liveHtml(slug, ib = '') {
     }
 
     const slug = ${jsValue(camera.slug)};
-    const accessToken = ${jsValue(token)};
+    let accessToken = ${jsValue(token)};
     const pttSupported = ${camera.pttSupported === false ? 'false' : 'true'};
     const streamSeconds = 60;
     const video = document.getElementById('video');
@@ -4163,6 +4191,28 @@ function liveHtml(slug, ib = '') {
       video.volume = audioOn ? 1 : 0;
       audio.textContent = audioOn ? 'Audio On' : 'Audio Off';
       audio.classList.toggle('off', !audioOn);
+    }
+
+    // Home Assistant rotates camera access tokens on a timer, and the proxy's
+    // browser tokens carry their own TTL, so the token baked into this page
+    // dies while the page stays open. Every start asks the panel for a live
+    // one. Without this, Restart replayed the dead token and every retry came
+    // back 403 with no way out but a reload.
+    async function refreshAccessToken() {
+      try {
+        const response = await fetch('/live/' + encodeURIComponent(slug) + '/token', {
+          headers: { accept: 'application/json' },
+          cache: 'no-store'
+        });
+        if (!response.ok) return false;
+        const payload = await response.json();
+        const token = String((payload && payload.token) || '');
+        if (!token) return false;
+        accessToken = token;
+        return true;
+      } catch (error) {
+        return false;
+      }
     }
 
     function streamUrl() {
@@ -4430,12 +4480,15 @@ function liveHtml(slug, ib = '') {
 
     async function startPlayer() {
       stopPlayer();
-      if (!accessToken) {
+      setLoading('Waking camera and waiting for video');
+
+      const refreshed = await refreshAccessToken();
+      if (!refreshed && !accessToken) {
         setEnded('Live token unavailable');
         return;
       }
+
       refreshFrameoAudioHardware();
-      setLoading('Waking camera and waiting for video');
 
       if (!window.mpegts) {
         setEnded('Live player library did not load. E-WP-001');
@@ -5386,6 +5439,130 @@ ${frameoDeviceBootstrapScript()}
 </html>`;
 }
 
+// A desktop-oriented Lovelace card composer.  It deliberately lives entirely
+// in the browser: drafts are saved in localStorage and export is an explicit
+// copy/download action, so opening the builder can never change an HA
+// dashboard or this panel's own config.
+function visualBuilderHtml(ib = '') {
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>HA Light Panel · Card Builder</title>
+  ${ingressHeadScript(ib)}
+  <style>
+    :root { color-scheme: dark; --bg:#09121c; --panel:#101d2a; --panel2:#142537; --line:#294154; --text:#edf5fb; --muted:#91a7b8; --blue:#38bdf8; --mint:#2dd4bf; --danger:#fb7185; }
+    * { box-sizing:border-box; }
+    body { margin:0; min-width:960px; background:var(--bg); color:var(--text); font:14px/1.45 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    button, input, select, textarea { font:inherit; }
+    button { border:0; border-radius:8px; padding:9px 12px; cursor:pointer; color:#062032; background:var(--blue); font-weight:750; }
+    button.secondary { color:var(--text); background:#22384a; } button.quiet { color:var(--muted); background:transparent; border:1px solid var(--line); } button.danger { color:#fff; background:#be3450; }
+    button:hover { filter:brightness(1.1); } button:disabled { opacity:.45; cursor:not-allowed; }
+    header { height:68px; display:flex; align-items:center; gap:16px; padding:0 24px; border-bottom:1px solid var(--line); background:#0c1722; position:sticky; top:0; z-index:5; }
+    .brand { font-size:17px; font-weight:800; white-space:nowrap; } .brand small { color:var(--mint); font-weight:700; margin-left:7px; }
+    .header-actions { display:flex; align-items:center; gap:8px; margin-left:auto; } .saved { color:var(--muted); font-size:12px; }
+    main { display:grid; grid-template-columns:235px minmax(510px, 1fr) 310px; gap:0; min-height:calc(100vh - 68px); }
+    aside { padding:19px; background:#0c1722; border-right:1px solid var(--line); } aside.right { border-right:0; border-left:1px solid var(--line); }
+    h2 { margin:0 0 12px; font-size:13px; text-transform:uppercase; letter-spacing:.09em; color:var(--muted); } h3 { margin:18px 0 8px; font-size:13px; }
+    .type-list { display:grid; gap:7px; } .type { text-align:left; padding:11px; color:var(--text); background:var(--panel); border:1px solid var(--line); } .type span { display:block; color:var(--muted); font-size:11px; font-weight:500; margin-top:2px; }
+    .help { margin-top:22px; padding:13px; color:var(--muted); background:#102131; border:1px solid var(--line); border-radius:10px; font-size:12px; } .help strong { color:var(--text); }
+    .workspace { min-width:0; padding:23px; } .workspace-title { display:flex; justify-content:space-between; align-items:start; margin-bottom:18px; } .workspace-title h1 { font-size:22px; margin:0; } .workspace-title p { margin:3px 0 0; color:var(--muted); }
+    .canvas { min-height:calc(100vh - 165px); display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); grid-auto-rows:minmax(160px,auto); gap:14px; align-content:start; padding:18px; border:1px dashed #35546a; border-radius:14px; background:linear-gradient(90deg,rgba(56,189,248,.025) 1px,transparent 1px),linear-gradient(rgba(56,189,248,.025) 1px,transparent 1px),#0b1723; background-size:24px 24px; }
+    .empty { grid-column:1/-1; padding:70px 20px; text-align:center; color:var(--muted); } .empty b { display:block; color:var(--text); font-size:17px; margin-bottom:5px; }
+    .card { position:relative; min-width:0; min-height:160px; padding:16px; overflow:hidden; border:1px solid var(--line); border-radius:12px; background:var(--panel); cursor:pointer; box-shadow:0 8px 20px rgba(0,0,0,.12); } .card.selected { outline:2px solid var(--blue); border-color:transparent; } .card:hover .card-tools { opacity:1; }
+    .card-tools { position:absolute; top:9px; right:9px; display:flex; gap:4px; opacity:0; transition:.12s; } .card-tools button { width:27px; height:27px; padding:0; color:var(--text); background:#20384a; } .card-tools button:last-child { color:#fecdd3; }
+    .eyebrow { color:var(--mint); font-size:10px; font-weight:800; letter-spacing:.1em; text-transform:uppercase; } .card-name { margin-top:7px; font-size:18px; font-weight:750; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; } .entity { margin-top:3px; color:var(--muted); font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .big-state { margin-top:27px; font-size:35px; font-weight:800; } .caption { color:var(--muted); font-size:12px; } .button-preview { display:flex; align-items:center; justify-content:space-between; margin-top:27px; padding:12px; border-radius:8px; background:#1f6176; font-weight:750; } .gauge { width:90px; height:90px; border:10px solid var(--mint); border-left-color:#244457; border-bottom-color:#244457; border-radius:50%; margin:18px auto 0; display:grid; place-content:center; font-size:19px; font-weight:800; } .rows { margin-top:14px; border-top:1px solid var(--line); } .row { display:flex; justify-content:space-between; padding:8px 0; border-bottom:1px solid var(--line); color:#cde0ec; } .markdown { margin-top:15px; padding:11px; white-space:pre-wrap; background:#0b1621; border-radius:7px; color:#cedae5; } .picture { height:72px; margin-top:15px; display:grid; place-items:center; color:#9fb7c8; border-radius:8px; background:linear-gradient(135deg,#294c62,#162b3a); }
+    .field { display:grid; gap:5px; margin-bottom:12px; } label { color:var(--muted); font-size:12px; font-weight:650; } input, select, textarea { width:100%; padding:9px 10px; color:var(--text); background:#101f2d; border:1px solid var(--line); border-radius:7px; outline:none; } input:focus, select:focus, textarea:focus { border-color:var(--blue); } textarea { min-height:72px; resize:vertical; }
+    .inspector-empty { margin-top:45px; color:var(--muted); text-align:center; } .card-actions { display:flex; gap:7px; margin-top:17px; flex-wrap:wrap; } .tiny { color:var(--muted); font-size:11px; }
+    dialog { width:min(760px,calc(100vw - 48px)); max-height:calc(100vh - 48px); padding:0; color:var(--text); background:#101d2a; border:1px solid #42627a; border-radius:14px; box-shadow:0 20px 70px #000a; } dialog::backdrop { background:#000a; } .dialog-head { display:flex; align-items:center; gap:12px; padding:17px 20px; border-bottom:1px solid var(--line); } .dialog-head h2 { margin:0; color:var(--text); text-transform:none; letter-spacing:0; font-size:17px; } .dialog-body { padding:20px; } .dialog-body textarea { min-height:260px; font:12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; } .dialog-foot { display:flex; justify-content:flex-end; gap:8px; padding:0 20px 20px; } .notice { min-height:18px; margin-top:8px; color:#fcd34d; font-size:12px; }
+    @media (max-width:1100px) { main { grid-template-columns:210px minmax(450px,1fr) 275px; } .workspace { padding:15px; } aside { padding:14px; } }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand">HA Light Panel <small>Card Builder</small></div>
+    <div class="saved" id="saved">Draft saved in this browser</div>
+    <div class="header-actions"><button class="secondary" id="import">Import YAML</button><button class="secondary" id="copy">Copy YAML</button><button id="download">Download</button></div>
+  </header>
+  <main>
+    <aside><h2>Add a card</h2><div class="type-list" id="types"></div><div class="help"><strong>A private workspace.</strong><br>Your draft stays in this browser until you choose Copy or Download. Paste the resulting YAML into a Home Assistant dashboard in Edit mode.</div></aside>
+    <section class="workspace"><div class="workspace-title"><div><h1>Build your dashboard</h1><p>Choose a card, then tune it in the inspector.</p></div><button class="quiet" id="clear">New draft</button></div><div class="canvas" id="canvas"></div></section>
+    <aside class="right"><h2>Inspector</h2><div id="inspector"></div></aside>
+  </main>
+  <dialog id="yamlDialog"><div class="dialog-head"><h2 id="dialogTitle">Import Home Assistant YAML</h2><button class="quiet" id="closeDialog">Close</button></div><div class="dialog-body"><p class="tiny" id="dialogHint">Paste one card, a <code>cards:</code> list, or dashboard YAML. Common card properties are brought into the visual editor; anything unfamiliar remains editable in Home Assistant after export.</p><textarea id="yamlText" spellcheck="false" placeholder="type: entities\ntitle: Kitchen\nentities:\n  - entity: light.kitchen\n    name: Pendants"></textarea><div class="notice" id="notice"></div></div><div class="dialog-foot"><button class="secondary" id="closeDialog2">Cancel</button><button id="importConfirm">Import cards</button></div></dialog>
+  <script>
+  (function () {
+    var storageKey = 'ha-light-panel-card-builder-v1';
+    var types = [
+      { type:'entities', label:'Entities', hint:'A grouped list of entities', entity:'light.kitchen', title:'Room controls', entities:['light.kitchen','switch.fan'] },
+      { type:'button', label:'Button', hint:'A tappable entity control', entity:'light.kitchen', title:'Kitchen light' },
+      { type:'entity', label:'Entity', hint:'One entity and its state', entity:'sensor.living_room_temperature', title:'Living room' },
+      { type:'sensor', label:'Sensor', hint:'A compact graph-ready sensor', entity:'sensor.energy_today', title:'Energy today' },
+      { type:'gauge', label:'Gauge', hint:'A visual numeric range', entity:'sensor.humidity', title:'Humidity' },
+      { type:'markdown', label:'Markdown', hint:'A note, heading, or instructions', title:'Welcome home', content:'## Good evening\nEverything looks comfortable.' },
+      { type:'picture-entity', label:'Picture entity', hint:'An image-backed entity card', entity:'camera.front_door', title:'Front door' }
+    ];
+    var cards = [];
+    var selectedId = '';
+    var $ = function (id) { return document.getElementById(id); };
+    function uid() { return 'card-' + Date.now().toString(36) + Math.random().toString(36).slice(2,7); }
+    function escapeHtml(value) { var d = document.createElement('div'); d.textContent = String(value || ''); return d.innerHTML; }
+    function clean(value) { return String(value || '').replace(/^['"]|['"]$/g, '').trim(); }
+    function defaultCard(spec) { return { id:uid(), type:spec.type, title:spec.title || '', entity:spec.entity || '', icon:'', secondaryInfo:'', content:spec.content || '', entities:(spec.entities || []).slice(), span:1, showName:true, showState:true }; }
+    function save() { localStorage.setItem(storageKey, JSON.stringify(cards)); $('saved').textContent = 'Saved ' + new Date().toLocaleTimeString([], {hour:'numeric', minute:'2-digit'}); }
+    function load() { try { cards = JSON.parse(localStorage.getItem(storageKey) || '[]'); if (!Array.isArray(cards)) cards=[]; } catch (_) { cards=[]; } }
+    function selected() { return cards.find(function (card) { return card.id === selectedId; }); }
+    function add(type) { var spec = types.find(function (item) { return item.type === type; }); var card = defaultCard(spec); cards.push(card); selectedId=card.id; commit(); }
+    function commit() { save(); render(); }
+    function cardPreview(card) {
+      var heading = escapeHtml(card.title || card.entity || 'Untitled card'); var entity = escapeHtml(card.entity || 'No entity selected'); var type = escapeHtml(card.type.replace(/-/g,' '));
+      var body = '';
+      if (card.type === 'entities') { body = '<div class="rows">' + (card.entities.length ? card.entities : ['Add entities in the inspector']).slice(0,4).map(function(e){ return '<div class="row"><span>' + escapeHtml(e) + '</span><span>›</span></div>'; }).join('') + '</div>'; }
+      else if (card.type === 'button') body = '<div class="button-preview"><span>' + (card.icon ? escapeHtml(card.icon) + ' ' : '') + 'Tap to toggle</span><span>ON</span></div>';
+      else if (card.type === 'gauge') body = '<div class="gauge">68%</div>';
+      else if (card.type === 'markdown') body = '<div class="markdown">' + escapeHtml(card.content || 'Add a note in the inspector') + '</div>';
+      else if (card.type === 'picture-entity') body = '<div class="picture">Image preview</div><div class="caption" style="margin-top:8px">Camera · available</div>';
+      else body = '<div class="big-state">72<span style="font-size:17px">°</span></div><div class="caption">Current state' + (card.secondaryInfo ? ' · ' + escapeHtml(card.secondaryInfo) : '') + '</div>';
+      return '<article class="card' + (card.id === selectedId ? ' selected' : '') + '" data-id="' + card.id + '" style="grid-column:span ' + Math.min(3,Math.max(1,Number(card.span)||1)) + '"><div class="card-tools"><button data-move="up" title="Move earlier">↑</button><button data-move="down" title="Move later">↓</button><button data-remove="yes" title="Delete">×</button></div><div class="eyebrow">' + type + '</div><div class="card-name">' + heading + '</div>' + (card.type === 'markdown' ? '' : '<div class="entity">' + entity + '</div>') + body + '</article>';
+    }
+    function renderCanvas() { $('canvas').innerHTML = cards.length ? cards.map(cardPreview).join('') : '<div class="empty"><b>Your canvas is ready.</b>Pick a card type on the left, or import the YAML from a dashboard you already use.</div>'; }
+    function field(label, key, value, kind) { return '<div class="field"><label>' + label + '</label>' + (kind === 'select' ? '<select data-field="' + key + '"><option value="1"' + (Number(value)===1?' selected':'') + '>One column</option><option value="2"' + (Number(value)===2?' selected':'') + '>Two columns</option><option value="3"' + (Number(value)===3?' selected':'') + '>Full width</option></select>' : '<' + (kind === 'textarea' ? 'textarea' : 'input') + ' data-field="' + key + '" value="' + (kind === 'textarea' ? '' : escapeHtml(value)) + '"' + (kind === 'textarea' ? '>' + escapeHtml(value) + '</textarea>' : '>') + '</div>'); }
+    function renderInspector() {
+      var card = selected(); if (!card) { $('inspector').innerHTML='<div class="inspector-empty">Select a card to change its details.</div>'; return; }
+      var html = field('Card title / name','title',card.title) + (card.type === 'markdown' ? field('Markdown content','content',card.content,'textarea') : field('Entity ID','entity',card.entity));
+      if (card.type !== 'markdown') html += field('Icon (optional)','icon',card.icon) + field('Secondary info (optional)','secondaryInfo',card.secondaryInfo);
+      if (card.type === 'entities') html += field('Entities, one per line','entities',card.entities.join('\n'),'textarea');
+      html += field('Canvas width','span',card.span,'select') + '<div class="card-actions"><button class="secondary" id="duplicate">Duplicate</button><button class="danger" id="delete">Delete</button></div><p class="tiny">The visual canvas is a helpful approximation. Home Assistant renders the final card using your theme and installed custom cards.</p>';
+      $('inspector').innerHTML=html;
+    }
+    function renderTypes() { $('types').innerHTML=types.map(function(spec){ return '<button class="type" data-type="' + spec.type + '">' + spec.label + '<span>' + spec.hint + '</span></button>'; }).join(''); }
+    function render() { renderCanvas(); renderInspector(); }
+    function yamlScalar(value) { var raw=String(value || ''); if (!raw || /[:#{}\[\],&*!|>'"%@]|^[-?]|^(true|false|null|yes|no|on|off|\d+)$/i.test(raw) || /^\s|\s$/.test(raw)) return JSON.stringify(raw); return raw; }
+    function cardYaml(card, indent) { var s=indent || ''; var rows=[s + 'type: ' + yamlScalar(card.type)]; if (card.title) rows.push(s + (card.type==='markdown' ? 'title' : 'name') + ': ' + yamlScalar(card.title)); if (card.entity && card.type!=='entities' && card.type!=='markdown') rows.push(s+'entity: '+yamlScalar(card.entity)); if (card.icon) rows.push(s+'icon: '+yamlScalar(card.icon)); if (card.secondaryInfo && card.type!=='markdown') rows.push(s+'secondary_info: '+yamlScalar(card.secondaryInfo)); if (card.type==='entities') { rows.push(s+'entities:'); (card.entities || []).filter(Boolean).forEach(function(entity){ rows.push(s+'  - entity: '+yamlScalar(entity)); }); } if (card.type==='markdown' && card.content) { rows.push(s+'content: |'); card.content.split('\n').forEach(function(line){ rows.push(s+'  '+line); }); } return rows.join('\n'); }
+    function outputYaml() { return 'cards:\n' + cards.map(function(card){ return cardYaml(card,'  ').replace(/^  type:/,'  - type:'); }).join('\n'); }
+    function importYaml(text) {
+      var lines=String(text || '').replace(/\r/g,'').split('\n'); var candidates=[];
+      for (var i=0;i<lines.length;i++) { var match=lines[i].match(/^(\s*)(?:-\s+)?type:\s*(.+?)\s*$/); if (!match) continue; var indent=match[1].length; var end=i+1; while(end<lines.length) { var next=lines[end].match(/^(\s*)(?:-\s+)?type:\s*(.+?)\s*$/); if(next && next[1].length<=indent) break; end++; } var block=lines.slice(i,end); var type=clean(match[2]); if (type==='vertical-stack' || type==='horizontal-stack' || type==='grid') continue; var read=function(key){ var re=new RegExp('^\\s*'+key+':\\s*(.+?)\\s*$'); for(var j=0;j<block.length;j++){var m=block[j].match(re);if(m)return clean(m[1]);}return ''; }; var entities=[]; block.forEach(function(line){var e=line.match(/^\s*-\s+entity:\s*(.+?)\s*$/);if(e)entities.push(clean(e[1]));}); var content=''; var contentAt=block.findIndex(function(line){return /^\s*content:\s*[>|]/.test(line);}); if(contentAt>=0) content=block.slice(contentAt+1).filter(function(line){return line.trim();}).map(function(line){return line.replace(/^\s{2,}/,'');}).join('\n'); candidates.push({id:uid(), type:type, title:read('title') || read('name'), entity:read('entity'), icon:read('icon'), secondaryInfo:read('secondary_info'), content:content, entities:entities, span:1, showName:true, showState:true}); }
+      if (!candidates.length && /^\s*type:/.test(text)) { throw new Error('Could not read that card. Check that its type is on a line like “type: entities”.'); } if (!candidates.length) throw new Error('No Lovelace cards found. Paste YAML containing one or more “type:” lines.'); cards=candidates; selectedId=cards[0].id; commit(); return candidates.length;
+    }
+    $('types').addEventListener('click',function(event){ var type=event.target.closest('[data-type]'); if(type) add(type.dataset.type); });
+    $('canvas').addEventListener('click',function(event){ var action=event.target.closest('[data-remove],[data-move]'); var cardNode=event.target.closest('.card'); if(!cardNode)return; var id=cardNode.dataset.id; var index=cards.findIndex(function(card){return card.id===id;}); if(action&&action.dataset.remove){cards.splice(index,1);selectedId=cards[0]?cards[0].id:'';commit();return;} if(action&&action.dataset.move){var target=action.dataset.move==='up'?index-1:index+1;if(target>=0&&target<cards.length){var taken=cards.splice(index,1)[0];cards.splice(target,0,taken);commit();}return;} selectedId=id;render(); });
+    $('inspector').addEventListener('input',function(event){ var card=selected(); if(!card||!event.target.dataset.field)return; var key=event.target.dataset.field; card[key]=key==='entities'?event.target.value.split('\n').map(function(x){return x.trim();}).filter(Boolean):event.target.value; commit(); });
+    $('inspector').addEventListener('change',function(event){ var card=selected(); if(card&&event.target.dataset.field){card[event.target.dataset.field]=event.target.value;commit();} });
+    $('inspector').addEventListener('click',function(event){ var card=selected(); if(event.target.id==='delete'&&card){cards=cards.filter(function(x){return x.id!==card.id;});selectedId=cards[0]?cards[0].id:'';commit();} if(event.target.id==='duplicate'&&card){var clone=JSON.parse(JSON.stringify(card));clone.id=uid();cards.splice(cards.indexOf(card)+1,0,clone);selectedId=clone.id;commit();} });
+    $('clear').onclick=function(){ if(confirm('Start a new empty draft? Your current local draft will be replaced.')){cards=[];selectedId='';commit();} };
+    var dialog=$('yamlDialog'); $('import').onclick=function(){ $('dialogTitle').textContent='Import Home Assistant YAML'; $('yamlText').value=''; $('notice').textContent=''; dialog.showModal(); }; $('closeDialog').onclick=$('closeDialog2').onclick=function(){dialog.close();}; $('importConfirm').onclick=function(){try{var count=importYaml($('yamlText').value);dialog.close();$('saved').textContent='Imported '+count+' card'+(count===1?'':'s')+' · saved locally';}catch(error){$('notice').textContent=error.message;}};
+    $('copy').onclick=async function(){ if(!cards.length){alert('Add or import a card first.');return;} try{await navigator.clipboard.writeText(outputYaml());$('saved').textContent='YAML copied to clipboard';}catch(_){$('yamlText').value=outputYaml();$('dialogTitle').textContent='Copy your YAML';$('notice').textContent='Your browser blocked automatic clipboard access. Select and copy the text below.';dialog.showModal();} };
+    $('download').onclick=function(){ if(!cards.length){alert('Add or import a card first.');return;} var blob=new Blob([outputYaml()+'\n'],{type:'text/yaml'});var a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='lovelace-cards.yaml';a.click();setTimeout(function(){URL.revokeObjectURL(a.href);},0); };
+    load(); renderTypes(); render();
+  })();
+  </script>
+</body>
+</html>`;
+}
+
 // Optional settings page, mounted at /hvac-settings and reached from the
 // Settings button on the main panel. Everything on it is driven by
 // `panel.settings` in the config: leave that block out (or leave its entities
@@ -5945,6 +6122,14 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (req.method === 'GET' && url.pathname === '/builder') {
+      send(res, 200, {
+        'content-type': 'text/html; charset=utf-8',
+        'cache-control': 'no-store'
+      }, visualBuilderHtml(ingressBase));
+      return;
+    }
+
     if (req.method === 'GET' && url.pathname === '/hvac-settings') {
       if (!settingsPageEnabled()) {
         send(res, 404, { 'content-type': 'text/plain; charset=utf-8' }, 'settings page is not configured');
@@ -6125,6 +6310,18 @@ const server = http.createServer(async (req, res) => {
         'content-type': 'text/html; charset=utf-8',
         'cache-control': 'no-store'
       }, body);
+      return;
+    }
+
+    const liveTokenMatch = url.pathname.match(/^\/live\/([^/]+)\/token$/);
+    if (req.method === 'GET' && liveTokenMatch) {
+      const slug = decodeURIComponent(liveTokenMatch[1]);
+      const camera = cameraConfig(slug);
+      if (!camera) {
+        send(res, 404, { 'content-type': 'text/plain; charset=utf-8' }, 'unknown camera');
+        return;
+      }
+      sendJson(res, 200, await liveViewToken(camera));
       return;
     }
 

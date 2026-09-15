@@ -13,6 +13,7 @@ If this saves you a little time, [buy me a coffee](https://paypal.me/ABPaintball
 ## Features
 
 - Lightweight climate dashboard with six room cards
+- Desktop visual card builder with Lovelace YAML import/export
 - Compact SVG UI, no frontend framework
 - Landscape kiosk layout that reflows for portrait phones
 - Home Assistant REST polling
@@ -123,6 +124,20 @@ Open:
 ```text
 http://localhost:8890/
 ```
+
+## Visual Card Builder
+
+Open `http://localhost:8890/builder` on a desktop browser to sketch a Home
+Assistant dashboard without editing YAML by hand. Add common Lovelace card
+types, select a card to edit its entity and title, and adjust its width on the
+visual canvas. You can also paste existing dashboard YAML (a single card, a
+`cards:` list, or a whole dashboard) to bring common card settings into the
+builder.
+
+The builder saves its draft only in that browser. **Copy YAML** puts a
+`cards:` block on your clipboard, while **Download** saves it as a YAML file;
+paste either result into a Home Assistant dashboard in Edit mode. It never
+writes to Home Assistant or changes the panel's `config.json`.
 
 ## Docker
 
