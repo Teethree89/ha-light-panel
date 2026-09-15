@@ -141,11 +141,14 @@ Open the builder from a desktop browser at one of these URLs:
 - Direct Node, Docker, or add-on install: `http://<panel-server>:8890/builder`
 - Through the optional HA Light Panel HACS integration: `https://<your-ha-url>/api/ha_light_panel/builder`
 
-The builder loads the panel's current room cards and native layout metadata.
-Add room, entity-value, or text cards; bind entity state or attributes; then
-drag, resize, duplicate, and style them with colours and font sizes. Canvas
-presets cover common landscape and portrait displays. Portrait mode can stack
-cards automatically or keep a separately adjusted portrait layout.
+The builder loads the complete native SVG composition: status cards, Rooms &
+thermostats panel, room cards, safety actions, and Family target/control panel.
+Those live SVG regions retain their actions and live values; their geometry and
+available labels are exported under `panel.layout.nativeCards`. Add room,
+entity-value, or text cards; bind entity state or attributes; then drag,
+resize, duplicate, and style them with colours and font sizes. Canvas presets
+cover common landscape and portrait displays. Portrait mode can stack cards
+automatically or keep a separately adjusted portrait layout.
 
 When the panel has a working `HA_URL` and `HA_TOKEN`, Entity ID fields offer
 every Home Assistant entity by ID and friendly name. The draft stays in the
