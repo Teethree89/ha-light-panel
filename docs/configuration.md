@@ -88,16 +88,17 @@ Values can be plain entities or entity attributes:
 
 ## Visual Layout Builder
 
-Open `/builder` on a desktop to load the current room cards into the visual
-editor. It exports native panel configuration, not Lovelace YAML. The editor
-keeps the existing `panel.rooms` bindings and writes optional visual metadata
-under `panel.layout`:
+Open `/builder` on a desktop to load the current native layout into the visual
+editor. It exports native panel configuration, not Lovelace YAML. Imported
+room cards remain editable for compatibility, but new cards are generic display,
+action, or text cards. The editor writes optional visual metadata under
+`panel.layout`:
 
 ```json
 {
   "panel": {
     "layout": {
-      "version": 1,
+      "version": 4,
       "canvas": {
         "preset": "frameo",
         "w": 1280,
@@ -118,7 +119,7 @@ under `panel.layout`:
       "cards": [
         {
           "id": "outside",
-          "type": "entity",
+          "type": "display",
           "title": "Outside",
           "entity": "sensor.outside_temperature",
           "x": 780,
@@ -132,14 +133,34 @@ under `panel.layout`:
 }
 ```
 
-`entity` cards display a state or optional entity attribute; `text` cards
-display fixed text. In landscape, exported room geometry and styling are used
-by the live SVG dashboard, and added entity/text cards render as native SVG
-cards. The existing dashboard still automatically reflows its core controls
-and room cards on portrait devices; added cards stack below it automatically
-unless the editor saves a custom portrait layout. Review the generated file,
-replace your `config.json`, and restart the panel service—there is no browser
-write endpoint.
+`display` cards show a state or optional entity attribute; `text` cards show
+fixed text. `action` cards call a configured Home Assistant service or script
+and can independently enable confirmation, success, and failure modals:
+
+```json
+{
+  "id": "bedtime",
+  "type": "action",
+  "title": "Run bedtime",
+  "content": "Tap to run",
+  "action": {
+    "service": "script.bedtime",
+    "data": {"source": "panel"},
+    "confirm": {"enabled": true, "title": "Bedtime?", "body": "Run bedtime now?", "confirmLabel": "Run"},
+    "success": {"enabled": true, "title": "Done", "body": "Bedtime started."},
+    "failure": {"enabled": true, "title": "Could not run", "body": ""}
+  }
+}
+```
+
+In landscape, exported room geometry and styling are used by the live SVG
+dashboard, and added display/action/text cards render as native SVG cards. The
+dashboard resolves an action card ID on the server before calling its saved
+service; the browser never supplies the service or JSON data. Core controls and
+room cards still reflow on portrait devices; added cards stack below them unless
+the editor saves a custom portrait layout. Review the generated file, replace
+your `config.json`, and restart the panel service—there is no browser write
+endpoint.
 
 ## Room Extra Text
 

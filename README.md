@@ -141,14 +141,15 @@ Open the builder from a desktop browser at one of these URLs:
 - Direct Node, Docker, or add-on install: `http://<panel-server>:8890/builder`
 - Through the optional HA Light Panel HACS integration: `https://<your-ha-url>/api/ha_light_panel/builder`
 
-The builder loads the complete native SVG composition: status cards, Rooms &
-thermostats panel, room cards, safety actions, and Family target/control panel.
-Those live SVG regions retain their actions and live values; their geometry and
-available labels are exported under `panel.layout.nativeCards`. Add room,
-entity-value, or text cards; bind entity state or attributes; then drag,
-resize, duplicate, and style them with colours and font sizes. Canvas presets
-cover common landscape and portrait displays. Portrait mode can stack cards
-automatically or keep a separately adjusted portrait layout.
+The builder loads any existing native SVG composition first. Those imported
+regions retain their actions and live values; their geometry and labels are
+exported under `panel.layout.nativeCards`. New cards are intentionally generic:
+add a **Display card** for any entity or attribute, an **Action button** for a
+Home Assistant service or script, or fixed **Text**. Action buttons can have
+confirmation, success, and failure modals. Drag, resize, duplicate, and style
+each card with colours and font sizes. Canvas presets cover common landscape
+and portrait displays; portrait mode can stack cards automatically or keep a
+separately adjusted layout.
 
 When the panel has a working `HA_URL` and `HA_TOKEN`, Entity ID fields offer
 every Home Assistant entity by ID and friendly name. The draft stays in the
@@ -157,7 +158,7 @@ browser. **Copy config** and **Download config** export a reviewed
 The builder never writes to Home Assistant or overwrites a running service
 configuration from the browser.
 
-### Configurable native actions
+### Configurable actions
 
 Select **Balance rooms** in the Layout Builder to configure its Home Assistant
 service or script and optional JSON service data. Its action inspector also
@@ -166,6 +167,10 @@ success/failure modals. The readiness guard is enabled by default and is
 enforced by the server as well as the browser. Action and modal settings are
 saved under `panel.layout.nativeCards.btnBalance.action`; the prior
 `panel.actions.assist` remains the fallback for existing configurations.
+
+Generic Action buttons use the same modal controls, but save under their entry
+in `panel.layout.cards`. The panel resolves the card ID and configured service
+on the server, so a browser cannot substitute a different service or payload.
 
 ## Docker
 
