@@ -52,9 +52,15 @@ Once started, open `http://<your-ha-host>:8890` in any browser.
 
 ### Visual Panel Layout Builder
 
+> **Work in progress.** The builder exports a config for review and manual
+> installation; it does not yet replace every bespoke SVG region or act as a
+> general Lovelace editor. Back up your config before replacing it.
+
 On a desktop browser, open `http://<your-ha-host>:8890/builder` to edit the
-native SVG panel visually. It loads your current room cards, lets you add
-entity and text cards, and exports the resulting `config.json`. If you use the
+native SVG panel visually. It loads your current layout, lets you add generic
+Display, Action, and Text cards, and exports the resulting `config.json`.
+Action cards can call a saved Home Assistant service/script and design
+confirmation, success, and failure modals. If you use the
 optional HA Light Panel HACS integration, the same page is also available at
 `https://<your-ha-url>/api/ha_light_panel/builder` — useful through Nabu Casa
 or another setup that exposes only Home Assistant itself.
@@ -64,6 +70,9 @@ entity IDs and friendly names as you edit. The draft is kept in the browser
 only. Use **Copy config** or **Download config**, replace
 `/config/ha-light-panel.json`, and restart the add-on to apply it. The browser
 never changes Home Assistant or the running panel configuration itself.
+
+For complete add-on, Docker, systemd, manual Node.js, and HACS-proxy setup
+steps, see the [installation guide](https://github.com/Teethree89/ha-light-panel/blob/main/docs/installation.md).
 
 For kiosk displays (Frameo, Fire tablet, old iPad), point Fully Kiosk Browser or
 WallPanel at that URL. See the [Frameo setup guide](https://github.com/Teethree89/ha-light-panel/blob/main/docs/frameo-fully-kiosk.md) for detailed steps.

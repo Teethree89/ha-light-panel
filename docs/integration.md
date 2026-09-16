@@ -35,6 +35,11 @@ sidebar. Its internal navigation provides two pages:
 - **Builder** embeds the visual SVG panel layout builder at
   `/api/ha_light_panel/builder`.
 
+The Builder is currently **work in progress**: it exports a reviewed panel
+configuration for manual installation, not a direct write to the running
+service. See the [installation guide](installation.md#visual-builder-status--work-in-progress)
+for its current scope and backup guidance.
+
 The sidebar page is authenticated and keeps the regular Home Assistant
 navigation available. Its **New tab** button, and the direct ingress URLs,
 remain useful when you prefer the panel without the HA chrome.

@@ -88,6 +88,11 @@ Values can be plain entities or entity attributes:
 
 ## Visual Layout Builder
 
+> **Work in progress.** The visual builder exports a configuration for review
+> and manual installation. It does not yet replace every bespoke SVG region or
+> provide a general Lovelace-card editor. Keep a backup before replacing a
+> working config.
+
 Open `/builder` on a desktop to load the current native layout into the visual
 editor. It exports native panel configuration, not Lovelace YAML. Imported
 room cards remain editable for compatibility, but new cards are generic display,

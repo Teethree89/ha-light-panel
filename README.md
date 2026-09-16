@@ -28,6 +28,13 @@ If this saves you a little time, [buy me a coffee](https://paypal.me/ABPaintball
 - HAOS add-on, Docker, and systemd deployment examples
 - No runtime npm dependencies
 
+## Installation
+
+Choose the deployment that owns the panel service: Home Assistant add-on,
+Docker Compose, managed systemd, or manual Node.js/custom service. The complete
+commands, first-run configuration, update path, and optional HACS proxy steps
+are in the [installation guide](docs/installation.md).
+
 ## HACS Integration
 
 The panel runs on its own port, which anything that only tunnels Home Assistant
@@ -136,6 +143,11 @@ http://localhost:8890/
 
 ## Visual Panel Layout Builder
 
+> **Work in progress.** The builder safely exports a reviewed `config.json`,
+> but it is not yet a complete replacement for every bespoke SVG region or a
+> general Lovelace editor. Back up your config and test changes before using
+> them on a primary display. See the [builder status and limits](docs/installation.md#visual-builder-status--work-in-progress).
+
 Open the builder from a desktop browser at one of these URLs:
 
 - Direct Node, Docker, or add-on install: `http://<panel-server>:8890/builder`
@@ -174,6 +186,9 @@ on the server, so a browser cannot substitute a different service or payload.
 
 ## Docker
 
+For the full Docker/Compose install, configuration, restart, and update steps,
+see [the installation guide](docs/installation.md#2-docker-compose).
+
 ```sh
 cp examples/starter.json config.json
 cp .env.example .env
@@ -181,6 +196,9 @@ docker compose -f docker-compose.example.yml --env-file .env up -d --build
 ```
 
 ## systemd
+
+For standard and custom-service adoption instructions, including the precise
+updater service name, see [the installation guide](docs/installation.md#3-managed-systemd).
 
 On a Debian-style host with Node.js 20+ use the managed installer:
 
@@ -297,9 +315,11 @@ either way — the two halves are separate mechanisms and you need both:
 | Proxy service | Add-on store | ⋮ → **Repositories** → add the proxy repo URL, install its add-on |
 | Proxy integration | HACS | HACS → Integrations → ⋮ → **Custom repositories** → add the proxy repo URL |
 
-HA Light Panel itself is an **add-on**, not a HACS integration, so it is added
-under Settings → Add-ons → Add-on Store → ⋮ → Repositories. HACS will not find
-it, and that is expected.
+HA Light Panel has two separate pieces: the panel service is installed as an
+add-on, Docker/Compose deployment, systemd service, or manual Node process;
+the optional Home Assistant proxy integration is installed through HACS. HACS
+does not run the panel service by itself. See the [installation guide](docs/installation.md)
+for the exact path for each host.
 
 Without the proxy installed the panel still works: snapshots, climate, rooms,
 and motion toggles all use plain Home Assistant APIs. Only live view,

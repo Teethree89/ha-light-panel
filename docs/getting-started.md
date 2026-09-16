@@ -114,10 +114,17 @@ Snapshots, rooms, and climate do not.
 
 Once it works, pick a deployment:
 
-- **Home Assistant OS** — the [add-on](../addon/DOCS.md), easiest if you run HAOS
-- **Docker** — `docker-compose.example.yml`
-- **systemd** — the tagged managed installer on a Debian-style host:
-  `curl -fsSL https://raw.githubusercontent.com/Teethree89/ha-light-panel/main/scripts/bootstrap.sh | sudo bash`
+- **Home Assistant OS/Supervised** — the add-on
+- **Docker/Compose** — a NAS, VM, or another container host
+- **systemd** — a Debian-style Linux host
+- **Manual Node.js/custom service** — development or an unusual process manager
+
+The [installation guide](installation.md) has the full commands, first-run
+configuration, update process, and optional HACS-proxy setup for every path.
+
+The visual Layout Builder is currently **WIP**: it exports a config for review
+and manual installation, and is not yet a general Lovelace editor. Back up your
+working config before trying an exported layout.
 
 Then point a display at it: see the
 [Frameo / Fully Kiosk guide](frameo-fully-kiosk.md).
