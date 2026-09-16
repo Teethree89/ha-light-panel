@@ -456,13 +456,35 @@ can report:
 ## Settings Page
 
 An optional page at `/hvac-settings`, reached from a **Settings** button that
-appears next to **Cameras** on the main panel. It exposes two controls: a
-humidity-biased-cooling toggle, and a seasonal mode switch that shows a
-physical checklist before it changes anything.
+appears next to **Cameras** on the main panel. It exposes three controls: a
+maintenance-mode hold, a humidity-biased-cooling toggle, and a seasonal mode
+switch that shows a physical checklist before it changes anything.
 
 ```json
 "settings": {
   "title": "HVAC Settings",
+  "maintenance": {
+    "entity": "input_boolean.hvac_maintenance_mode",
+    "startService": "script.hvac_maintenance_mode_start",
+    "stopService": "script.hvac_maintenance_mode_stop",
+    "label": "Maintenance Mode",
+    "modeLabel": "Maintenance",
+    "modeDetail": "HVAC held for service",
+    "banner": "Shown in the row only while the hold is on.",
+    "hint": "Shown under the label as explanatory text.",
+    "on": {
+      "title": "Turn on maintenance mode?",
+      "lead": "Shown above the checklist.",
+      "confirmLabel": "I Understand \u2014 Hold the HVAC",
+      "steps": ["Wait for the indoor fan to stop.", "Kill power at the disconnect."]
+    },
+    "off": {
+      "title": "End maintenance mode?",
+      "lead": "Shown above the checklist.",
+      "confirmLabel": "I Understand \u2014 Resume HVAC",
+      "steps": ["Hands and tools are clear.", "Power is restored."]
+    }
+  },
   "humidityCooling": {
     "entity": "input_boolean.humidity_biased_cooling_enabled",
     "label": "Humidity-Biased Cooling",
@@ -488,14 +510,25 @@ physical checklist before it changes anything.
 }
 ```
 
+`maintenance` is for hands-on service: a hold that stays on until someone turns
+it off. The toggle never calls the entity directly — it runs `startService` or
+`stopService`, so the automations that actually park the equipment stay in Home
+Assistant, and the entity is only what the panel reads back. Both checklists are
+confirmed before anything runs. While the entity is on, the main panel's mode
+badge reads `modeLabel` / `modeDetail` ahead of every other state, so an idle
+system under service never shows as comfortable. `startService` and
+`stopService` may be any domain (`script.x`, `input_boolean.turn_on`, an
+automation); without them the row renders read-only and the toggle errors.
+
 `options` drives both the mode cards and the confirmation checklists, so the
 page is not limited to Winter/Summer — each entry's `value` must match an
 option on the `input_select`. `furnaceGuard` is optional; without it the guard
 line is left blank.
 
 Omit `settings` entirely and the Settings button disappears, `/hvac-settings`
-returns 404, and the Cameras button keeps its full width. `humidityCooling` and
-`seasonalMode` are independent: configure one and only that control renders.
+returns 404, and the Cameras button keeps its full width. `maintenance`,
+`humidityCooling` and `seasonalMode` are independent: configure one and only
+that control renders.
 
 ## Blink Ops
 

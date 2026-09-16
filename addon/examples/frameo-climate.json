@@ -89,6 +89,36 @@
     },
     "settings": {
       "title": "HVAC Settings",
+      "maintenance": {
+        "entity": "input_boolean.hybrid_hvac_maintenance_mode",
+        "startService": "script.hybrid_hvac_maintenance_mode_start",
+        "stopService": "script.hybrid_hvac_maintenance_mode_stop",
+        "label": "Maintenance Mode",
+        "modeLabel": "Maintenance",
+        "modeDetail": "HVAC held for service",
+        "banner": "Maintenance mode is ON. The mini split is off and nothing in Home Assistant will command it or the furnace fan until you turn this off.",
+        "hint": "For coil cleaning and other hands-on service. Turning this on shuts the mini split off and holds every HVAC automation, so nothing can spin the unit up while you are working on it. It never expires on its own; you turn it back off here when you are done.",
+        "on": {
+          "title": "Turn on maintenance mode?",
+          "lead": "This shuts the mini split off and holds every HVAC automation. Before you start:",
+          "confirmLabel": "I Understand — Hold the HVAC",
+          "steps": [
+            "Wait for the indoor fan to stop.",
+            "Kill power to the mini split at its disconnect or breaker.",
+            "Cover or unplug anything below the indoor head that should not get wet."
+          ]
+        },
+        "off": {
+          "title": "End maintenance mode?",
+          "lead": "HVAC automation resumes immediately and the unit can start within seconds. Before you confirm:",
+          "confirmLabel": "I Understand — Resume HVAC",
+          "steps": [
+            "Hands, tools and rags are clear of the indoor and outdoor units.",
+            "Panels and filters are back on and the condensate drain is clear.",
+            "Power is restored at the disconnect or breaker."
+          ]
+        }
+      },
       "humidityCooling": {
         "entity": "input_boolean.humidity_biased_cooling_enabled",
         "label": "Humidity-Biased Cooling",
@@ -103,17 +133,20 @@
           {
             "value": "Winter",
             "label": "Winter Mode",
-            "icon": "\u2744\ufe0f",
+            "icon": "❄️",
             "title": "Switch to Winter Mode?",
-            "confirmLabel": "I Understand \u2014 Switch to Winter",
-            "steps": ["Open all supply registers.", "Open the fresh air intake."]
+            "confirmLabel": "I Understand — Switch to Winter",
+            "steps": [
+              "Open all supply registers.",
+              "Open the fresh air intake."
+            ]
           },
           {
             "value": "Summer",
             "label": "Summer Mode",
-            "icon": "\u2600\ufe0f",
+            "icon": "☀️",
             "title": "Switch to Summer Mode?",
-            "confirmLabel": "I Understand \u2014 Switch to Summer",
+            "confirmLabel": "I Understand — Switch to Summer",
             "steps": [
               "Close all supply registers.",
               "Put the register covers on.",

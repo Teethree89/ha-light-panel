@@ -104,6 +104,40 @@ const DEFAULT_CONFIG = {
     // both disappear.
     settings: {
       title: 'HVAC Settings',
+      // Optional hold-everything switch for hands-on service. Drop the block
+      // (or blank `entity`) and the row, its confirmations, the `maintenance`
+      // mode badge and the maintenanceModeSet action all disappear.
+      maintenance: {
+        entity: 'input_boolean.hybrid_hvac_maintenance_mode',
+        startService: 'script.hybrid_hvac_maintenance_mode_start',
+        stopService: 'script.hybrid_hvac_maintenance_mode_stop',
+        label: 'Maintenance Mode',
+        modeLabel: 'Maintenance',
+        modeDetail: 'HVAC held for service',
+        banner: 'Maintenance mode is ON. The mini split is off and nothing in Home Assistant will command it or the furnace fan until you turn this off.',
+        hint: 'For coil cleaning and other hands-on service. Turning this on shuts the mini split off and holds every HVAC automation \u2014 comfort control, airflow boosts, dry assist, X-Fan, the furnace-fan circulation assists and the IP watchdog \u2014 so nothing can spin the unit up while you are working on it. It also switches X-Fan off, so the coil-dry blower does not keep spinning after the unit powers down. The thermostat keeps running the furnace on its own schedule. It never expires on its own; you turn it back off here when you are done.',
+        on: {
+          title: 'Turn on maintenance mode?',
+          lead: 'This shuts the mini split off and holds every HVAC automation. Before you start spraying:',
+          confirmLabel: 'I Understand \u2014 Hold the HVAC',
+          steps: [
+            'Wait for the indoor fan to stop. The unit powers down first, then X-Fan is switched off \u2014 give it a few seconds.',
+            'Kill power to the mini split at its disconnect or breaker \u2014 software cannot stop an IR remote or a board fault.',
+            'Cover or unplug anything below the indoor head that should not get wet.',
+            'Have a drain path or catch bag for the runoff.'
+          ]
+        },
+        off: {
+          title: 'End maintenance mode?',
+          lead: 'HVAC automation resumes immediately and the unit can start within seconds. Before you confirm:',
+          confirmLabel: 'I Understand \u2014 Resume HVAC',
+          steps: [
+            'Hands, tools and rags are clear of the indoor and outdoor units.',
+            'Panels and filters are back on and the condensate drain is clear.',
+            'Power is restored at the disconnect or breaker.'
+          ]
+        }
+      },
       humidityCooling: {
         entity: 'input_boolean.hybrid_hvac_humidity_biased_cooling_enabled',
         label: 'Humidity-Biased Cooling',
@@ -1104,6 +1138,17 @@ function camerasState() {
 
 function modeSummary() {
   const mode = PANEL.mode || {};
+  const maintenance = (PANEL.settings || {}).maintenance || {};
+
+  // Ahead of every other branch: while the unit is being serviced the panel
+  // should say so rather than reporting the idle system as comfortable.
+  if (maintenance.entity && isOn(maintenance.entity)) {
+    return {
+      type: 'maintenance',
+      label: maintenance.modeLabel || 'Maintenance',
+      detail: maintenance.modeDetail || 'HVAC held for service'
+    };
+  }
 
   if (mode.automationEnabled && state(mode.automationEnabled, 'on') === 'off') {
     return { type: 'paused', label: 'Paused', detail: 'Automation disabled' };
@@ -1366,12 +1411,14 @@ function dashboardState() {
 // matching entity is not configured, and the page hides that control.
 function settingsSummary() {
   const settings = PANEL.settings || {};
+  const maintenance = settings.maintenance || {};
   const humidity = settings.humidityCooling || {};
   const season = settings.seasonalMode || {};
   const options = (Array.isArray(season.options) ? season.options : []).map(option => option.value);
   const current = season.entity ? state(season.entity, '') : '';
 
   return {
+    maintenanceMode: maintenance.entity ? isOn(maintenance.entity) : null,
     humidityCoolingEnabled: humidity.entity ? isOn(humidity.entity) : null,
     seasonalMode: options.includes(current) ? current : (options[0] || ''),
     furnaceGuardActive: season.furnaceGuard ? isOn(season.furnaceGuard) : null
@@ -1580,6 +1627,18 @@ async function callAction(name, options = {}) {
 
   if (name === 'warmer') {
     await adjustComfortBand('up', Boolean(options.moveBand));
+    return;
+  }
+
+  if (name === 'maintenanceModeSet') {
+    const maintenance = (PANEL.settings || {}).maintenance || {};
+    const enabled = Boolean(options.enabled);
+    const service = enabled ? maintenance.startService : maintenance.stopService;
+    if (!service) throw new Error('No maintenance mode service is configured.');
+    await callConfiguredService({ service });
+    // The confirmation modal closes on the response, so refresh eagerly rather
+    // than letting the row sit on its old value until the next poll.
+    await pollStates(true).catch(() => {});
     return;
   }
 
@@ -2711,6 +2770,7 @@ ${layoutCardMarkup()}
       dry: ['#38bdf8', '#b45309'],
       balance: ['#a78bfa', '#4f46e5'],
       fan: ['#2dd4bf', '#0f766e'],
+      maintenance: ['#facc15', '#a16207'],
       paused: ['#ef4444', '#581c87'],
       offline: ['#f59e0b', '#7c2d12'],
       hold: ['#22c55e', '#047857']
@@ -6069,15 +6129,67 @@ $('types').addEventListener('click',function(e){var t=e.target.closest('[data-ty
 // True when at least one control on the settings page has an entity behind it.
 function settingsPageEnabled() {
   const settings = PANEL.settings || {};
+  const maintenance = (settings.maintenance || {}).entity;
   const humidity = (settings.humidityCooling || {}).entity;
   const season = settings.seasonalMode || {};
   const seasonReady = Boolean(season.entity) && Array.isArray(season.options) && season.options.length > 0;
-  return Boolean(humidity) || seasonReady;
+  return Boolean(maintenance) || Boolean(humidity) || seasonReady;
 }
 
 function hvacSettingsHtml(ib = '') {
   const settings = PANEL.settings || {};
   const title = settings.title || 'HVAC Settings';
+
+  const maintenance = settings.maintenance || {};
+  const maintenanceRow = maintenance.entity
+    ? `
+    <div id="maintenanceRow" class="row maintenance">
+      <div class="label">${escapeHtml(maintenance.label || 'Maintenance Mode')}</div>
+      <div class="maintenance-banner">${escapeHtml(maintenance.banner || '')}</div>
+      <p class="hint">${escapeHtml(maintenance.hint || '')}</p>
+      <div class="toggle-row">
+        <button id="maintenanceToggle" class="toggle-switch warn" type="button" role="switch" aria-checked="false">
+          <span class="toggle-knob"></span>
+        </button>
+        <span id="maintenanceStatus" class="toggle-status">--</span>
+      </div>
+    </div>
+`
+    : '';
+
+  // Both confirmation checklists travel to the client as data so the copy
+  // stays in config next to the entity it guards.
+  const maintenanceCopy = {
+    on: {
+      title: (maintenance.on || {}).title || 'Turn on maintenance mode?',
+      lead: (maintenance.on || {}).lead || '',
+      confirmLabel: (maintenance.on || {}).confirmLabel || 'I Understand',
+      steps: Array.isArray((maintenance.on || {}).steps) ? maintenance.on.steps : []
+    },
+    off: {
+      title: (maintenance.off || {}).title || 'End maintenance mode?',
+      lead: (maintenance.off || {}).lead || '',
+      confirmLabel: (maintenance.off || {}).confirmLabel || 'I Understand',
+      steps: Array.isArray((maintenance.off || {}).steps) ? maintenance.off.steps : []
+    },
+    onStatus: maintenance.onStatus || 'On \u2014 HVAC held',
+    offStatus: maintenance.offStatus || 'Off'
+  };
+
+  const maintenanceModal = maintenance.entity
+    ? `
+  <div id="maintenanceModal" class="modal-backdrop hidden">
+    <div class="modal">
+      <h2 id="maintenanceModalTitle">Maintenance mode</h2>
+      <div id="maintenanceModalBody" class="modal-body"></div>
+      <div class="modal-actions">
+        <button id="maintenanceModalCancel" class="modal-btn cancel" type="button">Cancel</button>
+        <button id="maintenanceModalConfirm" class="modal-btn confirm warn" type="button">I Understand</button>
+      </div>
+    </div>
+  </div>
+`
+    : '';
 
   const humidity = settings.humidityCooling || {};
   const humidityRow = humidity.entity
@@ -6208,6 +6320,31 @@ ${seasonOptions.map(option => `        <button class="season-card" type="button"
       background: #0f766e;
       justify-content: flex-end;
     }
+    .toggle-switch.on.warn {
+      background: #a16207;
+    }
+    .row.maintenance.active {
+      border-color: #facc15;
+      background: #2a2109;
+    }
+    .row.maintenance.active .label {
+      color: #facc15;
+    }
+    .maintenance-banner {
+      display: none;
+      margin-bottom: 14px;
+      padding: 12px 14px;
+      border-radius: 10px;
+      background: rgba(250,204,21,0.14);
+      border: 1px solid rgba(250,204,21,0.45);
+      color: #fde68a;
+      font-size: 14px;
+      font-weight: 800;
+      line-height: 1.5;
+    }
+    .row.maintenance.active .maintenance-banner {
+      display: block;
+    }
     .toggle-knob {
       width: 30px;
       height: 30px;
@@ -6319,6 +6456,10 @@ ${seasonOptions.map(option => `        <button class="season-card" type="button"
       background: #38bdf8;
       color: #03111c;
     }
+    .modal-btn.confirm.warn {
+      background: #facc15;
+      color: #291f02;
+    }
   </style>
 </head>
 <body>
@@ -6327,9 +6468,9 @@ ${seasonOptions.map(option => `        <button class="season-card" type="button"
       <button class="back" type="button" onclick="history.length > 1 ? history.back() : (window.location.href = (window.IB || '') + '/')">&#8592; Back</button>
       <h1>${escapeHtml(title)}</h1>
     </div>
-${humidityRow}${seasonRow}
+${maintenanceRow}${humidityRow}${seasonRow}
   </main>
-
+${maintenanceModal}
   <div id="seasonModal" class="modal-backdrop hidden">
     <div class="modal">
       <h2 id="seasonModalTitle">Switch mode?</h2>
@@ -6344,6 +6485,16 @@ ${humidityRow}${seasonRow}
   <script>
     const CHECKLISTS = ${JSON.stringify(checklists)};
     const SEASON_FALLBACK = ${JSON.stringify(fallbackSeason)};
+    const MAINTENANCE = ${JSON.stringify(maintenanceCopy)};
+
+    const maintenanceRow = document.getElementById('maintenanceRow');
+    const maintenanceToggle = document.getElementById('maintenanceToggle');
+    const maintenanceStatus = document.getElementById('maintenanceStatus');
+    const maintenanceModal = document.getElementById('maintenanceModal');
+    const maintenanceModalTitle = document.getElementById('maintenanceModalTitle');
+    const maintenanceModalBody = document.getElementById('maintenanceModalBody');
+    const maintenanceModalCancel = document.getElementById('maintenanceModalCancel');
+    const maintenanceModalConfirm = document.getElementById('maintenanceModalConfirm');
 
     const humidityToggle = document.getElementById('humidityToggle');
     const humidityStatus = document.getElementById('humidityStatus');
@@ -6372,6 +6523,16 @@ ${humidityRow}${seasonRow}
 
     function applySettings(settings) {
       latestSettings = settings;
+
+      if (maintenanceToggle) {
+        const maintenanceOn = Boolean(settings.maintenanceMode);
+        if (maintenanceRow) maintenanceRow.classList.toggle('active', maintenanceOn);
+        maintenanceToggle.classList.toggle('on', maintenanceOn);
+        maintenanceToggle.setAttribute('aria-checked', String(maintenanceOn));
+        if (maintenanceStatus) {
+          maintenanceStatus.textContent = maintenanceOn ? MAINTENANCE.onStatus : MAINTENANCE.offStatus;
+        }
+      }
 
       if (humidityToggle) {
         const humidityOn = Boolean(settings.humidityCoolingEnabled);
@@ -6415,6 +6576,45 @@ ${humidityRow}${seasonRow}
     if (humidityToggle) {
       humidityToggle.addEventListener('click', () => {
         postAction('humidityCoolingToggle').catch(() => {});
+      });
+    }
+
+    let pendingMaintenance = null;
+
+    function openMaintenanceModal(enable) {
+      const info = MAINTENANCE[enable ? 'on' : 'off'];
+      pendingMaintenance = enable;
+      maintenanceModalTitle.textContent = info.title;
+      maintenanceModalBody.innerHTML = info.steps && info.steps.length
+        ? info.lead + '<ol>' + info.steps.map(step => '<li>' + step + '</li>').join('') + '</ol>'
+        : info.lead;
+      maintenanceModalConfirm.textContent = info.confirmLabel;
+      maintenanceModal.classList.remove('hidden');
+    }
+
+    function closeMaintenanceModal() {
+      pendingMaintenance = null;
+      maintenanceModal.classList.add('hidden');
+    }
+
+    if (maintenanceToggle && maintenanceModal) {
+      maintenanceToggle.addEventListener('click', () => {
+        openMaintenanceModal(!(latestSettings && latestSettings.maintenanceMode));
+      });
+      maintenanceModalCancel.addEventListener('click', closeMaintenanceModal);
+      maintenanceModal.addEventListener('click', event => {
+        if (event.target === maintenanceModal) closeMaintenanceModal();
+      });
+      maintenanceModalConfirm.addEventListener('click', () => {
+        if (pendingMaintenance === null) return;
+        const enabled = pendingMaintenance;
+        maintenanceModalConfirm.disabled = true;
+        postAction('maintenanceModeSet', { enabled })
+          .catch(() => {})
+          .finally(() => {
+            maintenanceModalConfirm.disabled = false;
+            closeMaintenanceModal();
+          });
       });
     }
 
