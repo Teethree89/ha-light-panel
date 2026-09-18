@@ -1785,14 +1785,28 @@ async function blinkProxyStatus() {
   }
 }
 
+// HA can hold several Blink config entries: its own "Add integration" flow
+// will create a second one for another account, and that one can sit in
+// setup_retry while the real one works. So every entry is reported, and the
+// top-level fields describe one representative entry for the status modal:
+// a loaded one if any, else an enabled one, else the first.
 async function haBlinkIntegrationStatus() {
   try {
-    const entries = await haFetch('/api/config/config_entries/entry');
-    const entry = (entries || []).find(item => item.domain === 'blink');
-    if (!entry) return { ok: false, error: 'no Blink config entry found' };
-    return { ok: true, state: entry.state, reason: entry.reason || null, disabledBy: entry.disabled_by || null };
+    const all = await haFetch('/api/config/config_entries/entry');
+    const entries = (all || []).filter(item => item.domain === 'blink').map(item => ({
+      entryId: item.entry_id,
+      title: item.title || '',
+      state: item.state,
+      reason: item.reason || null,
+      disabledBy: item.disabled_by || null
+    }));
+    if (!entries.length) return { ok: false, error: 'no Blink config entry found', entries };
+    const primary = entries.find(item => item.state === 'loaded')
+      || entries.find(item => !item.disabledBy)
+      || entries[0];
+    return { ok: true, ...primary, entries };
   } catch (error) {
-    return { ok: false, error: error.message || 'request failed' };
+    return { ok: false, error: error.message || 'request failed', entries: [] };
   }
 }
 
@@ -1854,6 +1868,8 @@ async function autoRestartBlinkProxyIfStale() {
 
 async function reloadBlinkIntegration(options = {}) {
   const force = Boolean(options.force);
+  // The watchdog passes the integration status it already fetched this tick.
+  const knownIntegration = options.integration || null;
   await pollStates(true).catch(() => {});
   const before = CAMERAS.map(cameraSummary);
   const needsReload = before.some(cameraNeedsBlinkReload);
@@ -1886,17 +1902,24 @@ async function reloadBlinkIntegration(options = {}) {
     // Any state other than `loaded` means HA is already retrying setup on its
     // own backoff (or the entry is disabled). Piling reloads on top of that
     // just multiplies sign-in attempts; recovering from bad credentials needs
-    // the Re-auth Blink flow, not a reload.
-    const integration = await haBlinkIntegrationStatus();
-    if (!integration.ok || integration.state !== 'loaded') {
+    // the Re-auth Blink flow, not a reload. The reload below targets whichever
+    // entry owns the first camera, which the panel cannot see, so with
+    // several entries it only runs when every enabled one is loaded.
+    const integration = knownIntegration || await haBlinkIntegrationStatus();
+    const enabled = (integration.entries || []).filter(item => !item.disabledBy);
+    const blocking = enabled.find(item => item.state !== 'loaded')
+      || (enabled.length ? null : integration);
+    if (!integration.ok || blocking) {
+      const shown = blocking || integration;
       return {
         ...camerasState(),
         reloaded: false,
         skipped: true,
         reason: 'integration_not_loaded',
-        integrationState: integration.state || null,
-        integrationReason: integration.reason || null,
-        disabledBy: integration.disabledBy || null
+        integrationState: shown.state || null,
+        integrationReason: shown.reason || null,
+        disabledBy: shown.disabledBy || null,
+        entryId: shown.entryId || null
       };
     }
 
@@ -7283,53 +7306,74 @@ pollStates(true).catch(error => {
 // the outcome changes, so a long-lived skip states itself once instead of
 // every tick. Disabled unless blinkOps.watchdogMs is set.
 let lastBlinkWatchdogReason = '';
-let blinkAuthFailureTicks = 0;
-let blinkDisableRequested = false;
+// Per config entry id: consecutive ticks spent failing sign-in, and whether a
+// disable has already been asked for.
+const blinkAuthFailureTicks = new Map();
+const blinkDisableRequested = new Set();
 
 // HA marks a Blink entry that failed on the network with the reason "Can not
 // connect to host", and one whose sign-in failed with no reason at all. Only
 // the second needs a human: HA retries it every ~80 seconds forever, and each
 // retry is another sign-in attempt against Blink.
-function blinkAuthFailure(result) {
-  if (result.reason !== 'integration_not_loaded' || result.integrationState !== 'setup_retry') return false;
-  const why = String(result.integrationReason || '');
-  return !/connect/i.test(why);
+function blinkEntryAuthFailure(entry) {
+  if (entry.disabledBy || entry.state !== 'setup_retry') return false;
+  return !/connect/i.test(String(entry.reason || ''));
 }
 
 // The panel cannot disable a config entry itself (that is websocket-only, and
 // the service may not reach HA's websocket), so it asks the root re-auth
-// helper, which already disables the entry at the start of every re-auth.
-// Re-auth Blink re-enables it once fresh tokens are installed.
-function maybeDisableBlinkAfterAuthFailure(result) {
-  if (blinkAuthFailure(result)) {
-    blinkAuthFailureTicks += 1;
-  } else if (result.reason !== 'cooldown') {
-    blinkAuthFailureTicks = 0;
-    blinkDisableRequested = false;
+// helper to disable that one entry. Re-auth Blink re-enables its own entry
+// once fresh tokens are installed. Every entry is checked, because a stray
+// second entry fails on its own schedule while the real one stays loaded.
+function maybeDisableFailingBlinkEntries(integration) {
+  if (!integration.ok) return;
+  const failing = new Set();
+  for (const entry of integration.entries) {
+    if (!blinkEntryAuthFailure(entry)) continue;
+    failing.add(entry.entryId);
+    blinkAuthFailureTicks.set(entry.entryId, (blinkAuthFailureTicks.get(entry.entryId) || 0) + 1);
   }
-  if (blinkDisableRequested || blinkAuthFailureTicks < BLINK_AUTH_FAILURE_TICKS || !BLINK_OPS.reauthSpool) return;
+  for (const entryId of [...blinkAuthFailureTicks.keys()]) {
+    if (!failing.has(entryId)) blinkAuthFailureTicks.delete(entryId);
+  }
+  for (const entryId of [...blinkDisableRequested]) {
+    if (!failing.has(entryId)) blinkDisableRequested.delete(entryId);
+  }
+  if (!BLINK_OPS.reauthSpool) return;
+  // The helper reads one request file, so ask for one entry per tick; a
+  // second failing entry is picked up on the next tick.
+  const target = [...failing].find(entryId =>
+    !blinkDisableRequested.has(entryId) && blinkAuthFailureTicks.get(entryId) >= BLINK_AUTH_FAILURE_TICKS);
+  if (!target) return;
   // Leave a re-auth that is in flight alone; an abandoned one goes stale.
   const reauth = blinkReauthStatus();
   const reauthActive = ['starting', 'awaiting_code', 'verifying', 'installing_tokens', 'enabling'].includes(reauth.step);
   if (reauthActive && Date.now() / 1000 - (reauth.updated || 0) < 15 * 60) return;
+  const entry = integration.entries.find(item => item.entryId === target);
   try {
-    blinkReauthRequest('disable', { reason: 'watchdog: sign-in failing, HA retrying setup' });
-    blinkDisableRequested = true;
-    console.warn('Blink watchdog: Blink sign-in is failing and HA keeps retrying it; asked the re-auth helper to disable the entry (use Re-auth Blink to restore it)');
+    blinkReauthRequest('disable', { entry_id: target, reason: 'watchdog: sign-in failing, HA retrying setup' });
+    blinkDisableRequested.add(target);
+    console.warn(`Blink watchdog: Blink sign-in is failing for entry ${target}${entry.title ? ` (${entry.title})` : ''} and HA keeps retrying it; asked the re-auth helper to disable that entry (use Re-auth Blink to restore it, or delete the entry in HA if it is a stray)`);
   } catch (error) {
     console.error(`Blink watchdog could not request disable: ${error.message}`);
   }
 }
 
-function blinkWatchdogTick() {
-  reloadBlinkIntegration().then(result => {
-    maybeDisableBlinkAfterAuthFailure(result);
+async function blinkWatchdogTick() {
+  const integration = await haBlinkIntegrationStatus();
+  maybeDisableFailingBlinkEntries(integration);
+  return reloadBlinkIntegration({ integration });
+}
+
+function runBlinkWatchdogTick() {
+  blinkWatchdogTick().then(result => {
     const reason = result.reason || '';
     if (reason === lastBlinkWatchdogReason) return;
     lastBlinkWatchdogReason = reason;
     if (reason === 'integration_not_loaded') {
       const disabled = result.disabledBy ? ` (disabled by ${result.disabledBy})` : '';
-      console.warn(`Blink watchdog: integration is ${result.integrationState || 'not loaded'}${disabled}; skipping reload (a reload cannot fix credentials \u2014 use Re-auth Blink)`);
+      const which = result.entryId ? ` (entry ${result.entryId})` : '';
+      console.warn(`Blink watchdog: integration is ${result.integrationState || 'not loaded'}${which}${disabled}; skipping reload (a reload cannot fix credentials \u2014 use Re-auth Blink)`);
     } else if (reason === 'circuit_breaker') {
       console.warn(`Blink watchdog: ${result.consecutiveReloads} consecutive reloads did not restore the cameras; pausing until they recover`);
     } else if (reason === 'reloaded') {
@@ -7342,6 +7386,6 @@ function blinkWatchdogTick() {
 
 if (BLINK_WATCHDOG_MS > 0) {
   console.log(`Blink watchdog: enabled, checking every ${Math.round(BLINK_WATCHDOG_MS / 1000)}s`);
-  blinkWatchdogTick();
-  setInterval(blinkWatchdogTick, BLINK_WATCHDOG_MS);
+  runBlinkWatchdogTick();
+  setInterval(runBlinkWatchdogTick, BLINK_WATCHDOG_MS);
 }

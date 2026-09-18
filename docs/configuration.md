@@ -576,6 +576,27 @@ another text. So:
   `sudo blink-reauth.py secure`, which restarts Home Assistant). Without a
   password Home Assistant's fallback sign-in cannot trigger a text; only a
   re-auth that a person starts can.
+- If Blink rate-limits the sign-in (HTTP 429), the re-auth status shows the
+  wait only when Blink says how long it is. Otherwise it says to wait, possibly
+  until the next day: a lockout can last hours. The status file keeps the HTTP
+  status and a short, credential-free snippet of Blink's reply.
+
+### More than one Blink config entry
+
+Home Assistant's own **Add integration → Blink** flow can create a second
+Blink entry, for example for another account. The panel and the helper handle
+that:
+
+- The re-auth helper only ever reads and rewrites the entry whose `unique_id`
+  is the `username` in `credentials.json`. Other Blink entries are never
+  given its tokens. With several entries and no `credentials.json`, a re-auth
+  refuses to guess.
+- The watchdog checks every Blink entry. An entry that keeps failing sign-in is
+  disabled on its own (the request names its `entry_id`), even while another
+  entry stays loaded. The automatic reload waits until every enabled entry is
+  `loaded`, because the panel can't tell which entry owns the cameras.
+- The Blink Status modal shows a loaded entry if there is one. Delete a stray
+  entry in **Settings → Devices & services → Blink**.
 
 Override the credentials path with `BLINK_CREDENTIALS_FILE` in the
 `blink-reauth.service` environment.

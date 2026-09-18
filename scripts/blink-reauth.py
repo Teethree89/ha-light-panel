@@ -9,9 +9,10 @@ OAuth v2 + SMS-2FA login that HA's blinkpy cannot complete on its own:
   verify CODE     submit the SMS code, mint tokens, install them into the config
                   entry (stop/edit/start HA), re-enable the entry
   cancel          re-enable the blink entry without changing tokens
-  disable         disable the blink entry, but only while HA is stuck retrying
-                  its setup (the panel's watchdog asks for this so HA stops
-                  signing in against Blink over and over)
+  disable [ID]    disable one blink entry (by entry_id; default: the target
+                  entry), but only while HA is stuck retrying its setup (the
+                  panel's watchdog asks for this so HA stops signing in
+                  against Blink over and over)
   secure          move the Blink password out of HA's config entry into
                   CREDENTIALS_FILE (stop/edit/start HA)
   status          print the current status JSON
@@ -29,6 +30,12 @@ Blink texts a 2FA code for every one of those sign-ins, which HA cannot even
 complete. With no password in the entry, that fallback cannot reach the SMS
 step; only this script signs in with the password, and only when a person
 starts a re-auth. The first run moves an existing password out of the entry.
+
+HA can hold more than one blink config entry (its own "Add integration" flow
+happily creates a second one for another account). Everything here acts on a
+single target entry: the one whose unique_id is the username in
+CREDENTIALS_FILE. Other blink entries are never read for tokens and never
+rewritten, so one account's tokens cannot end up in another account's entry.
 """
 import json
 import os
@@ -65,8 +72,9 @@ HA_TOKEN = os.environ["HA_TOKEN"]
 # password never shows up in `docker exec` arguments or the process list.
 CREDS = json.loads(__CREDS_JSON__)
 STATE_PATH = "/tmp/blink_oauth_state.pickle"
+ENTRY_ID = os.environ["ENTRY_ID"]
 entries = json.load(open("/config/.storage/core.config_entries"))["data"]["entries"]
-entry = [e for e in entries if e["domain"] == "blink"][0]
+entry = [e for e in entries if e["entry_id"] == ENTRY_ID][0]
 d = entry["data"]
 UA = const.OAUTH_USER_AGENT
 PAGE_HEADERS = {
@@ -74,6 +82,14 @@ PAGE_HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
 }
+
+def snippet(body):
+    """A short, credential-free slice of a response body for the status file."""
+    text = " ".join(str(body or "").split())
+    for secret in (CREDS["password"], CREDS["username"]):
+        if secret:
+            text = text.replace(secret, "[redacted]")
+    return text[:200]
 
 async def set_entry_disabled(session, disabled_by):
     async with session.ws_connect("ws://127.0.0.1:8123/api/websocket") as ws:
@@ -121,15 +137,30 @@ async def main():
                  "csrf-token": parser.csrf_token}, allow_redirects=False)
         body = await r3.text()
         if r3.status == 429:
+            # Only trust a wait Blink actually sent. A lockout with no hint
+            # can last hours (2026-09-18), so do not invent a short one.
+            wait = None
             try:
-                wait = json.loads(body).get("next_time_in_secs", 600)
+                value = json.loads(body).get("next_time_in_secs")
+                if value is not None:
+                    wait = int(value)
             except Exception:
-                wait = 600
-            print("RESULT " + json.dumps({"ok": False, "rate_limited": True,
-                  "error": "Blink rate limit; retry in %d min" % (int(wait) // 60 or 1)}))
+                pass
+            if wait is not None and wait > 0:
+                if wait >= 5400:
+                    when = "about %d hours" % round(wait / 3600)
+                else:
+                    when = "about %d min" % (wait // 60 or 1)
+                error = "Blink is rate-limiting sign-ins; Blink says retry in " + when
+            else:
+                error = ("Blink is rate-limiting sign-ins and did not say for how long; "
+                         "wait before trying again (this can last hours, possibly until tomorrow)")
+            print("RESULT " + json.dumps({"ok": False, "rate_limited": True, "error": error,
+                  "retry_after_secs": wait, "http_status": 429, "body_snippet": snippet(body)}))
             return
         if r3.status not in (202, 412):
-            print("RESULT " + json.dumps({"ok": False, "error": "signin failed (HTTP %d)" % r3.status}))
+            print("RESULT " + json.dumps({"ok": False, "error": "signin failed (HTTP %d)" % r3.status,
+                  "http_status": r3.status, "body_snippet": snippet(body)}))
             return
         phone = ""
         try:
@@ -214,8 +245,7 @@ SET_DISABLED_PY = r'''
 import asyncio, aiohttp, json, os
 HA_TOKEN = os.environ["HA_TOKEN"]
 DISABLED_BY = json.loads(os.environ["DISABLED_BY"])
-entries = json.load(open("/config/.storage/core.config_entries"))["data"]["entries"]
-entry_id = [e for e in entries if e["domain"] == "blink"][0]["entry_id"]
+entry_id = os.environ["ENTRY_ID"]
 async def main():
     async with aiohttp.ClientSession() as s:
         async with s.ws_connect("ws://127.0.0.1:8123/api/websocket") as ws:
@@ -230,10 +260,11 @@ asyncio.run(main())
 '''
 
 
-def set_entry_disabled(disabled):
+def set_entry_disabled(disabled, entry_id):
     return docker_py(SET_DISABLED_PY, env={
         "HA_TOKEN": ha_token(),
         "DISABLED_BY": json.dumps("user" if disabled else None),
+        "ENTRY_ID": entry_id,
     })
 
 
@@ -294,10 +325,10 @@ def wait_for_ha(timeout=240):
     return False
 
 
-def blink_entry_state():
+def blink_entry_state(entry_id):
     _, entries = ha_api("/api/config/config_entries/entry")
     for e in entries:
-        if e.get("domain") == "blink":
+        if e.get("domain") == "blink" and e.get("entry_id") == entry_id:
             return e.get("state")
     return "missing"
 
@@ -308,10 +339,59 @@ def busy():
     return active and time.time() - status.get("updated", 0) < 300
 
 
-def blink_entry_data():
+def read_entries():
     with open(ENTRIES_FILE) as f:
-        doc = json.load(f)
-    return next(e for e in doc["data"]["entries"] if e["domain"] == "blink").get("data", {})
+        return json.load(f)
+
+
+def write_entries(doc):
+    with open(ENTRIES_FILE, "w") as f:
+        json.dump(doc, f, indent=2)
+
+
+def credentials_username():
+    try:
+        with open(CREDENTIALS_FILE) as f:
+            username = json.load(f).get("username")
+        return username if isinstance(username, str) and username else None
+    except FileNotFoundError:
+        return None
+
+
+class NoTargetEntry(Exception):
+    pass
+
+
+def find_target(entries):
+    """Pick the one blink entry this script manages from a list of entries.
+
+    The entry whose unique_id is the username in CREDENTIALS_FILE (HA's blink
+    flow uses the username as unique_id). Before CREDENTIALS_FILE exists, a
+    lone blink entry is unambiguous; with several, refuse rather than guess.
+    """
+    blink = [e for e in entries if e.get("domain") == "blink"]
+    username = credentials_username()
+    if username:
+        wanted = username.strip().lower()
+        for e in blink:
+            if str(e.get("unique_id") or "").strip().lower() == wanted:
+                return e
+        raise NoTargetEntry("no blink config entry has unique_id %s (the username in %s)"
+                            % (username, CREDENTIALS_FILE))
+    if len(blink) == 1:
+        return blink[0]
+    if not blink:
+        raise NoTargetEntry("no blink config entry found")
+    raise NoTargetEntry("%d blink config entries and no %s to choose one; add "
+                        "{\"username\": ..., \"password\": ...} there" % (len(blink), CREDENTIALS_FILE))
+
+
+def target_entry_id():
+    return find_target(read_entries()["data"]["entries"])["entry_id"]
+
+
+def blink_entry_data():
+    return find_target(read_entries()["data"]["entries"]).get("data", {})
 
 
 def load_credentials():
@@ -371,9 +451,7 @@ def ensure_hardware_id():
     (verified 2026-08-19: that value 406s while fresh UUIDs get 302). Repair
     it in place with the same stop/edit/start dance the token install uses.
     """
-    with open(ENTRIES_FILE) as f:
-        doc = json.load(f)
-    entry = next(e for e in doc["data"]["entries"] if e["domain"] == "blink")
+    entry = find_target(read_entries()["data"]["entries"])
     current = entry["data"].get("hardware_id")
     if is_uuid(current):
         return {"ok": True, "changed": False, "hardware_id": current}
@@ -382,14 +460,11 @@ def ensure_hardware_id():
     subprocess.run(["docker", "stop", CONTAINER], check=True, capture_output=True)
     try:
         subprocess.run(["cp", ENTRIES_FILE, ENTRIES_FILE + ".bak-hardware-id"], check=True)
-        with open(ENTRIES_FILE) as f:
-            doc = json.load(f)
-        for e in doc["data"]["entries"]:
-            if e["domain"] == "blink":
-                e["data"]["hardware_id"] = new_id
-                strip_password(e["data"])
-        with open(ENTRIES_FILE, "w") as f:
-            json.dump(doc, f, indent=2)
+        doc = read_entries()
+        e = find_target(doc["data"]["entries"])
+        e["data"]["hardware_id"] = new_id
+        strip_password(e["data"])
+        write_entries(doc)
     finally:
         subprocess.run(["docker", "start", CONTAINER], check=True, capture_output=True)
 
@@ -401,9 +476,7 @@ def ensure_hardware_id():
 def tokens_look_valid():
     """Whether the entry actually holds credentials worth loading."""
     try:
-        with open(ENTRIES_FILE) as f:
-            doc = json.load(f)
-        entry = next(e for e in doc["data"]["entries"] if e["domain"] == "blink")
+        entry = find_target(read_entries()["data"]["entries"])
     except Exception:
         return False
     data = entry.get("data", {})
@@ -416,10 +489,10 @@ def tokens_look_valid():
     return True
 
 
-def remember_entry_health():
+def remember_entry_health(entry_id):
     """Note whether the entry was working when this re-auth started."""
     try:
-        healthy = blink_entry_state() == "loaded"
+        healthy = blink_entry_state(entry_id) == "loaded"
     except Exception:
         healthy = False
     os.makedirs(STATUS_DIR, mode=0o755, exist_ok=True)
@@ -429,7 +502,7 @@ def remember_entry_health():
         os.remove(RESUME_FILE)
 
 
-def enable_entry_if_safe(fresh_tokens=False):
+def enable_entry_if_safe(entry_id, fresh_tokens=False):
     """Re-enable the blink entry, but only once credentials are real.
 
     Enabling an entry with junk tokens is not merely useless: blinkpy retries
@@ -451,7 +524,7 @@ def enable_entry_if_safe(fresh_tokens=False):
     if not fresh_tokens and not os.path.exists(RESUME_FILE):
         return {"ok": True, "enabled": False,
                 "reason": "entry was not working before this re-auth; left disabled until one succeeds"}
-    result = set_entry_disabled(False)
+    result = set_entry_disabled(False, entry_id)
     if result.get("ok") and os.path.exists(RESUME_FILE):
         os.remove(RESUME_FILE)
     return {**result, "enabled": bool(result.get("ok"))}
@@ -462,7 +535,13 @@ def cmd_start():
         print(json.dumps({"ok": False, "error": "re-auth already in progress"}))
         return
     set_status("starting")
-    remember_entry_health()
+    try:
+        entry_id = target_entry_id()
+    except NoTargetEntry as error:
+        set_status("error", error=str(error))
+        print(json.dumps({"ok": False, "error": str(error)}))
+        return
+    remember_entry_health(entry_id)
     creds = load_credentials()
     if not creds:
         error = "no Blink credentials; put {\"username\": ..., \"password\": ...} in " + CREDENTIALS_FILE
@@ -475,12 +554,14 @@ def cmd_start():
         print(json.dumps(repair))
         return
     script = PHASE1_PY.replace("__CREDS_JSON__", json.dumps(json.dumps(creds)))
-    result = docker_py(script, env={"HA_TOKEN": ha_token()})
+    result = docker_py(script, env={"HA_TOKEN": ha_token(), "ENTRY_ID": entry_id})
     if result.get("ok"):
-        set_status("awaiting_code", phone=result.get("phone", ""))
+        set_status("awaiting_code", phone=result.get("phone", ""), entry_id=entry_id)
     else:
-        set_status("error", error=result.get("error", "start failed"))
-        enable_entry_if_safe()
+        detail = {k: result[k] for k in ("rate_limited", "retry_after_secs", "http_status", "body_snippet")
+                  if result.get(k) is not None}
+        set_status("error", error=result.get("error", "start failed"), **detail)
+        enable_entry_if_safe(entry_id)
     print(json.dumps({**result}))
 
 
@@ -488,11 +569,17 @@ def cmd_verify(code):
     if get_status().get("step") != "awaiting_code":
         print(json.dumps({"ok": False, "error": "no re-auth in progress"}))
         return
+    try:
+        entry_id = target_entry_id()
+    except NoTargetEntry as error:
+        set_status("error", error=str(error))
+        print(json.dumps({"ok": False, "error": str(error)}))
+        return
     set_status("verifying")
     result = docker_py(PHASE2_PY, env={"BLINK_2FA_CODE": code})
     if not result.get("ok"):
         set_status("error", error=result.get("error", "verify failed"))
-        enable_entry_if_safe()
+        enable_entry_if_safe(entry_id)
         print(json.dumps(result))
         return
 
@@ -503,14 +590,11 @@ def cmd_verify(code):
         subprocess.run(["cp", ENTRIES_FILE, backup], check=True)
         with open(BOOTSTRAP_HOST) as f:
             tokens = json.load(f)
-        with open(ENTRIES_FILE) as f:
-            doc = json.load(f)
-        for e in doc["data"]["entries"]:
-            if e["domain"] == "blink":
-                e["data"].update(tokens)
-                strip_password(e["data"])
-        with open(ENTRIES_FILE, "w") as f:
-            json.dump(doc, f, indent=2)
+        doc = read_entries()
+        e = next(e for e in doc["data"]["entries"] if e["entry_id"] == entry_id)
+        e["data"].update(tokens)
+        strip_password(e["data"])
+        write_entries(doc)
         os.remove(BOOTSTRAP_HOST)
     finally:
         subprocess.run(["docker", "start", CONTAINER], check=True, capture_output=True)
@@ -520,11 +604,11 @@ def cmd_verify(code):
         return
 
     set_status("enabling")
-    enable_entry_if_safe(fresh_tokens=True)
+    enable_entry_if_safe(entry_id, fresh_tokens=True)
     deadline = time.time() + 120
     while time.time() < deadline:
         try:
-            state = blink_entry_state()
+            state = blink_entry_state(entry_id)
             if state == "loaded":
                 set_status("done")
                 print(json.dumps({"ok": True}))
@@ -537,30 +621,42 @@ def cmd_verify(code):
 
 
 def cmd_cancel():
-    enabled = enable_entry_if_safe()
+    try:
+        enabled = enable_entry_if_safe(target_entry_id())
+    except NoTargetEntry as error:
+        enabled = {"enabled": False, "reason": str(error)}
     status = set_status("cancelled")
     print(json.dumps({"ok": True, **status, "entry_enabled": enabled.get("enabled", False),
                       "entry_note": enabled.get("reason", "")}))
 
 
-def cmd_disable():
-    """Disable the entry while HA is stuck retrying a failed Blink sign-in.
+def cmd_disable(entry_id=None):
+    """Disable one entry while HA is stuck retrying a failed Blink sign-in.
 
-    Requested by the panel's watchdog. HA retries setup_retry roughly every
-    80 seconds forever, and each retry signs in against Blink again. Checked
-    again here because the request is asynchronous: if the entry recovered or
-    a re-auth took over in the meantime, leave it alone. Does not touch the
-    status file, which belongs to the interactive re-auth flow.
+    Requested by the panel's watchdog, naming the failing entry. HA retries
+    setup_retry roughly every 80 seconds forever, and each retry signs in
+    against Blink again. Checked again here because the request is
+    asynchronous: if the entry recovered or a re-auth took over in the
+    meantime, leave it alone. A request without an entry_id (an older panel)
+    means the target entry. Does not touch the status file, which belongs to
+    the interactive re-auth flow.
     """
     if busy():
         print(json.dumps({"ok": True, "disabled": False, "reason": "re-auth in progress"}))
         return
-    state = blink_entry_state()
+    if not entry_id:
+        try:
+            entry_id = target_entry_id()
+        except NoTargetEntry as error:
+            print(json.dumps({"ok": False, "disabled": False, "error": str(error)}))
+            return
+    state = blink_entry_state(entry_id)
     if state != "setup_retry":
-        print(json.dumps({"ok": True, "disabled": False, "reason": "entry is " + str(state)}))
+        print(json.dumps({"ok": True, "disabled": False, "entry_id": entry_id,
+                          "reason": "entry is " + str(state)}))
         return
-    result = set_entry_disabled(True)
-    print(json.dumps({**result, "disabled": bool(result.get("ok"))}))
+    result = set_entry_disabled(True, entry_id)
+    print(json.dumps({**result, "disabled": bool(result.get("ok")), "entry_id": entry_id}))
 
 
 def cmd_secure():
@@ -573,8 +669,12 @@ def cmd_secure():
     if busy():
         print(json.dumps({"ok": False, "error": "re-auth in progress"}))
         return
-    if not load_credentials():
-        print(json.dumps({"ok": False, "error": "no password in the entry or " + CREDENTIALS_FILE}))
+    try:
+        if not load_credentials():
+            print(json.dumps({"ok": False, "error": "no password in the entry or " + CREDENTIALS_FILE}))
+            return
+    except NoTargetEntry as error:
+        print(json.dumps({"ok": False, "error": str(error)}))
         return
     if "password" not in blink_entry_data():
         print(json.dumps({"ok": True, "changed": False}))
@@ -582,13 +682,9 @@ def cmd_secure():
     subprocess.run(["docker", "stop", CONTAINER], check=True, capture_output=True)
     try:
         subprocess.run(["cp", ENTRIES_FILE, ENTRIES_FILE + ".bak-blink-secure"], check=True)
-        with open(ENTRIES_FILE) as f:
-            doc = json.load(f)
-        for e in doc["data"]["entries"]:
-            if e["domain"] == "blink":
-                strip_password(e["data"])
-        with open(ENTRIES_FILE, "w") as f:
-            json.dump(doc, f, indent=2)
+        doc = read_entries()
+        strip_password(find_target(doc["data"]["entries"])["data"])
+        write_entries(doc)
     finally:
         subprocess.run(["docker", "start", CONTAINER], check=True, capture_output=True)
     print(json.dumps({"ok": wait_for_ha(), "changed": True}))
@@ -616,7 +712,8 @@ def cmd_process_request():
     elif action == "cancel":
         cmd_cancel()
     elif action == "disable":
-        cmd_disable()
+        entry_id = req.get("entry_id")
+        cmd_disable(entry_id if isinstance(entry_id, str) and entry_id else None)
 
 
 def main():
@@ -632,7 +729,7 @@ def main():
     elif action == "cancel":
         cmd_cancel()
     elif action == "disable":
-        cmd_disable()
+        cmd_disable(sys.argv[2] if len(sys.argv) > 2 else None)
     elif action == "secure":
         cmd_secure()
     elif action == "process-request":
