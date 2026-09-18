@@ -546,8 +546,22 @@ let lastPollAt = 0;
 let pollPromise = null;
 let lastError = '';
 let lastBlinkReloadAt = 0;
+let consecutiveBlinkReloads = 0;
 
 const BLINK_RELOAD_COOLDOWN_MS = 5 * 60 * 1000;
+// A reload can only fix a *stuck* integration (entry loaded, entities gone
+// stale). It cannot fix expired credentials: each reload re-runs blinkpy's
+// startup, and once the refresh token is dead that falls through to a
+// password sign-in, which Blink answers with a fresh SMS code every time.
+// Reloading an entry that is already in setup_retry also resets HA's own
+// backoff, so a 5-minute watchdog turned into ~84 sign-ins an hour on
+// 2026-09-18. So the automatic path only reloads while the entry is loaded,
+// and gives up after a few consecutive reloads fail to bring the cameras back.
+const BLINK_RELOAD_MAX_CONSECUTIVE = 3;
+// How many watchdog ticks an entry may sit in setup_retry for an auth failure
+// before the watchdog asks the re-auth helper to disable it. Disabling is the
+// only thing that stops HA's own retry loop; re-auth re-enables it.
+const BLINK_AUTH_FAILURE_TICKS = 2;
 
 function readSecretText() {
   if (!SECRET_FILE || !fs.existsSync(SECRET_FILE)) return '';
@@ -1847,6 +1861,9 @@ async function reloadBlinkIntegration(options = {}) {
   const cooldownRemainingMs = Math.max(0, BLINK_RELOAD_COOLDOWN_MS - (now - lastBlinkReloadAt));
 
   if (!force && !needsReload) {
+    // The cameras came back, whether by a reload or on their own, so the
+    // circuit breaker's count of failed reloads starts over.
+    consecutiveBlinkReloads = 0;
     return {
       ...camerasState(),
       reloaded: false,
@@ -1865,18 +1882,53 @@ async function reloadBlinkIntegration(options = {}) {
     };
   }
 
+  if (!force) {
+    // Any state other than `loaded` means HA is already retrying setup on its
+    // own backoff (or the entry is disabled). Piling reloads on top of that
+    // just multiplies sign-in attempts; recovering from bad credentials needs
+    // the Re-auth Blink flow, not a reload.
+    const integration = await haBlinkIntegrationStatus();
+    if (!integration.ok || integration.state !== 'loaded') {
+      return {
+        ...camerasState(),
+        reloaded: false,
+        skipped: true,
+        reason: 'integration_not_loaded',
+        integrationState: integration.state || null,
+        integrationReason: integration.reason || null,
+        disabledBy: integration.disabledBy || null
+      };
+    }
+
+    if (consecutiveBlinkReloads >= BLINK_RELOAD_MAX_CONSECUTIVE) {
+      return {
+        ...camerasState(),
+        reloaded: false,
+        skipped: true,
+        reason: 'circuit_breaker',
+        consecutiveReloads: consecutiveBlinkReloads
+      };
+    }
+  }
+
   lastBlinkReloadAt = now;
+  if (force) consecutiveBlinkReloads = 0;
   await haFetch('/api/services/homeassistant/reload_config_entry', {
     method: 'POST',
     body: JSON.stringify({ entity_id: CAMERAS[0].sourceEntity })
   });
   await pollStates(true).catch(() => {});
 
+  const recovered = !CAMERAS.map(cameraSummary).some(cameraNeedsBlinkReload);
+  consecutiveBlinkReloads = recovered ? 0 : consecutiveBlinkReloads + 1;
+
   return {
     ...camerasState(),
     reloaded: true,
     skipped: false,
-    reason: 'reloaded'
+    reason: 'reloaded',
+    recovered,
+    consecutiveReloads: consecutiveBlinkReloads
   };
 }
 
@@ -7231,14 +7283,53 @@ pollStates(true).catch(error => {
 // the outcome changes, so a long-lived skip states itself once instead of
 // every tick. Disabled unless blinkOps.watchdogMs is set.
 let lastBlinkWatchdogReason = '';
+let blinkAuthFailureTicks = 0;
+let blinkDisableRequested = false;
+
+// HA marks a Blink entry that failed on the network with the reason "Can not
+// connect to host", and one whose sign-in failed with no reason at all. Only
+// the second needs a human: HA retries it every ~80 seconds forever, and each
+// retry is another sign-in attempt against Blink.
+function blinkAuthFailure(result) {
+  if (result.reason !== 'integration_not_loaded' || result.integrationState !== 'setup_retry') return false;
+  const why = String(result.integrationReason || '');
+  return !/connect/i.test(why);
+}
+
+// The panel cannot disable a config entry itself (that is websocket-only, and
+// the service may not reach HA's websocket), so it asks the root re-auth
+// helper, which already disables the entry at the start of every re-auth.
+// Re-auth Blink re-enables it once fresh tokens are installed.
+function maybeDisableBlinkAfterAuthFailure(result) {
+  if (blinkAuthFailure(result)) {
+    blinkAuthFailureTicks += 1;
+  } else if (result.reason !== 'cooldown') {
+    blinkAuthFailureTicks = 0;
+    blinkDisableRequested = false;
+  }
+  if (blinkDisableRequested || blinkAuthFailureTicks < BLINK_AUTH_FAILURE_TICKS || !BLINK_OPS.reauthSpool) return;
+  // Leave a re-auth that is in flight alone; an abandoned one goes stale.
+  const reauth = blinkReauthStatus();
+  const reauthActive = ['starting', 'awaiting_code', 'verifying', 'installing_tokens', 'enabling'].includes(reauth.step);
+  if (reauthActive && Date.now() / 1000 - (reauth.updated || 0) < 15 * 60) return;
+  try {
+    blinkReauthRequest('disable', { reason: 'watchdog: sign-in failing, HA retrying setup' });
+    blinkDisableRequested = true;
+    console.warn('Blink watchdog: Blink sign-in is failing and HA keeps retrying it; asked the re-auth helper to disable the entry (use Re-auth Blink to restore it)');
+  } catch (error) {
+    console.error(`Blink watchdog could not request disable: ${error.message}`);
+  }
+}
 
 function blinkWatchdogTick() {
   reloadBlinkIntegration().then(result => {
+    maybeDisableBlinkAfterAuthFailure(result);
     const reason = result.reason || '';
     if (reason === lastBlinkWatchdogReason) return;
     lastBlinkWatchdogReason = reason;
     if (reason === 'integration_not_loaded') {
-      console.warn(`Blink watchdog: integration is ${result.integrationState || 'not loaded'}; skipping reload (a reload cannot fix credentials \u2014 use Re-auth Blink)`);
+      const disabled = result.disabledBy ? ` (disabled by ${result.disabledBy})` : '';
+      console.warn(`Blink watchdog: integration is ${result.integrationState || 'not loaded'}${disabled}; skipping reload (a reload cannot fix credentials \u2014 use Re-auth Blink)`);
     } else if (reason === 'circuit_breaker') {
       console.warn(`Blink watchdog: ${result.consecutiveReloads} consecutive reloads did not restore the cameras; pausing until they recover`);
     } else if (reason === 'reloaded') {

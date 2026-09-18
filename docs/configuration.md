@@ -553,7 +553,32 @@ flow.
 | `proxyStatusUrl` | Enables the whole feature. Without it none of the UI or the `/cameras/blink-*` routes exist. |
 | `reauthSpool` / `reauthStatus` | Enables the SMS re-auth flow. |
 | `proxyRestartSpool` | Enables **Restart Proxy** and the automatic restart when the proxy looks stale on page open. |
-| `watchdogMs` | Reloads the Blink integration on this interval when the cameras look stuck. `0` disables it. |
+| `watchdogMs` | Checks the Blink integration on this interval and reloads it when the cameras look stuck. `0` disables it. |
+
+### Why the watchdog is conservative
+
+Blink texts a 2FA code for every password sign-in. Home Assistant's Blink
+integration falls back to a password sign-in whenever its refresh token fails,
+and it retries that every minute or so for as long as the entry stays in
+`setup_retry`. It cannot finish the 2FA step itself, so each retry is just
+another text. So:
+
+- The watchdog reloads only an entry that is `loaded` with stale cameras. It
+  never reloads one that is retrying setup, and it stops after 3 reloads in a
+  row that don't bring the cameras back.
+- If the entry is retrying setup because sign-in failed (not because Blink was
+  unreachable), the watchdog asks the re-auth helper to **disable** it. That
+  stops the retries. **Re-auth Blink** re-enables it once new tokens are in.
+- The re-auth helper keeps the Blink password in
+  `/etc/blink-reauth/credentials.json` (root, `0600`), not in Home Assistant.
+  On first use it copies the password out of the config entry and removes it
+  from the entry the next time it installs tokens (or right away with
+  `sudo blink-reauth.py secure`, which restarts Home Assistant). Without a
+  password Home Assistant's fallback sign-in cannot trigger a text; only a
+  re-auth that a person starts can.
+
+Override the credentials path with `BLINK_CREDENTIALS_FILE` in the
+`blink-reauth.service` environment.
 
 The spool paths exist because the panel service is hardened
 (`NoNewPrivileges`, `ProtectSystem=strict`) and cannot restart services or run

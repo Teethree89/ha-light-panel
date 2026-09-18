@@ -9,6 +9,11 @@ OAuth v2 + SMS-2FA login that HA's blinkpy cannot complete on its own:
   verify CODE     submit the SMS code, mint tokens, install them into the config
                   entry (stop/edit/start HA), re-enable the entry
   cancel          re-enable the blink entry without changing tokens
+  disable         disable the blink entry, but only while HA is stuck retrying
+                  its setup (the panel's watchdog asks for this so HA stops
+                  signing in against Blink over and over)
+  secure          move the Blink password out of HA's config entry into
+                  CREDENTIALS_FILE (stop/edit/start HA)
   status          print the current status JSON
   process-request consume /var/spool/blink-reauth/request.json and dispatch to
                   one of the above (used by the blink-reauth.path systemd unit;
@@ -17,6 +22,13 @@ OAuth v2 + SMS-2FA login that HA's blinkpy cannot complete on its own:
 Progress is written to /run/blink-reauth/status.json so the panel can poll it.
 Network/OAuth steps run inside the homeassistant container (blinkpy + aiohttp
 live there); this host-side script orchestrates and does the privileged parts.
+
+The Blink password lives in CREDENTIALS_FILE (root-only), not in HA. HA's
+blinkpy falls back to a password sign-in whenever its refresh token fails, and
+Blink texts a 2FA code for every one of those sign-ins, which HA cannot even
+complete. With no password in the entry, that fallback cannot reach the SMS
+step; only this script signs in with the password, and only when a person
+starts a re-auth. The first run moves an existing password out of the entry.
 """
 import json
 import os
@@ -38,6 +50,7 @@ ENTRIES_FILE = os.path.join(HA_CONFIG_DIR, ".storage", "core.config_entries")
 BOOTSTRAP_HOST = os.path.join(HA_CONFIG_DIR, "blink_token_bootstrap.json")
 HA_URL = os.environ.get("HA_URL", "http://127.0.0.1:8123")
 CONTAINER = os.environ.get("HA_CONTAINER", "homeassistant")
+CREDENTIALS_FILE = os.environ.get("BLINK_CREDENTIALS_FILE", "/etc/blink-reauth/credentials.json")
 
 PHASE1_PY = r'''
 import asyncio, aiohttp, json, hashlib, base64, os, pickle
@@ -45,6 +58,9 @@ from blinkpy.helpers import constants as const
 from blinkpy.api import OAuthArgsParser
 
 HA_TOKEN = os.environ["HA_TOKEN"]
+# Substituted by the host script; the script travels over stdin, so the
+# password never shows up in `docker exec` arguments or the process list.
+CREDS = json.loads(__CREDS_JSON__)
 STATE_PATH = "/tmp/blink_oauth_state.pickle"
 entries = json.load(open("/config/.storage/core.config_entries"))["data"]["entries"]
 entry = [e for e in entries if e["domain"] == "blink"][0]
@@ -98,7 +114,7 @@ async def main():
             "Content-Type": "application/x-www-form-urlencoded",
             "Origin": "https://api.oauth.blink.com",
             "Referer": const.OAUTH_SIGNIN_URL,
-        }, data={"username": d["username"], "password": d["password"],
+        }, data={"username": CREDS["username"], "password": CREDS["password"],
                  "csrf-token": parser.csrf_token}, allow_redirects=False)
         body = await r3.text()
         if r3.status == 429:
@@ -191,9 +207,10 @@ async def main():
 asyncio.run(main())
 '''
 
-ENABLE_PY = r'''
+SET_DISABLED_PY = r'''
 import asyncio, aiohttp, json, os
 HA_TOKEN = os.environ["HA_TOKEN"]
+DISABLED_BY = json.loads(os.environ["DISABLED_BY"])
 entries = json.load(open("/config/.storage/core.config_entries"))["data"]["entries"]
 entry_id = [e for e in entries if e["domain"] == "blink"][0]["entry_id"]
 async def main():
@@ -203,11 +220,18 @@ async def main():
             await ws.send_json({"type": "auth", "access_token": HA_TOKEN})
             await ws.receive_json()
             await ws.send_json({"id": 1, "type": "config_entries/disable",
-                                "entry_id": entry_id, "disabled_by": None})
+                                "entry_id": entry_id, "disabled_by": DISABLED_BY})
             r = await ws.receive_json()
             print("RESULT " + json.dumps({"ok": bool(r.get("success"))}))
 asyncio.run(main())
 '''
+
+
+def set_entry_disabled(disabled):
+    return docker_py(SET_DISABLED_PY, env={
+        "HA_TOKEN": ha_token(),
+        "DISABLED_BY": json.dumps("user" if disabled else None),
+    })
 
 
 def ha_token():
@@ -281,6 +305,51 @@ def busy():
     return active and time.time() - status.get("updated", 0) < 300
 
 
+def blink_entry_data():
+    with open(ENTRIES_FILE) as f:
+        doc = json.load(f)
+    return next(e for e in doc["data"]["entries"] if e["domain"] == "blink").get("data", {})
+
+
+def load_credentials():
+    """Return {"username", "password"} for the manual sign-in, or None.
+
+    Reads CREDENTIALS_FILE. On the first run after upgrading, the password is
+    still in HA's entry; copy it out here so strip_password() can drop it
+    from the entry the next time this script rewrites it.
+    """
+    try:
+        with open(CREDENTIALS_FILE) as f:
+            creds = json.load(f)
+        if isinstance(creds.get("username"), str) and isinstance(creds.get("password"), str) \
+                and creds["username"] and creds["password"]:
+            return {"username": creds["username"], "password": creds["password"]}
+        return None
+    except FileNotFoundError:
+        pass
+
+    data = blink_entry_data()
+    if not data.get("username") or not data.get("password"):
+        return None
+    creds = {"username": data["username"], "password": data["password"]}
+    os.makedirs(os.path.dirname(CREDENTIALS_FILE), mode=0o700, exist_ok=True)
+    fd = os.open(CREDENTIALS_FILE, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump(creds, f)
+    return creds
+
+
+def strip_password(entry_data):
+    """Drop the password from a blink entry's data, once it is safe to.
+
+    Only after CREDENTIALS_FILE holds it, so a rewrite never loses the only
+    copy. HA keeps working without it: blinkpy needs the password only for
+    the sign-in fallback, and that fallback is what sends the SMS codes.
+    """
+    if os.path.exists(CREDENTIALS_FILE):
+        entry_data.pop("password", None)
+
+
 def is_uuid(value):
     try:
         uuid.UUID(str(value))
@@ -315,6 +384,7 @@ def ensure_hardware_id():
         for e in doc["data"]["entries"]:
             if e["domain"] == "blink":
                 e["data"]["hardware_id"] = new_id
+                strip_password(e["data"])
         with open(ENTRIES_FILE, "w") as f:
             json.dump(doc, f, indent=2)
     finally:
@@ -356,7 +426,7 @@ def enable_entry_if_safe():
     if not tokens_look_valid():
         return {"ok": True, "enabled": False,
                 "reason": "tokens missing or invalid; entry left disabled to avoid a 2FA SMS retry loop"}
-    result = docker_py(ENABLE_PY, env={"HA_TOKEN": ha_token()})
+    result = set_entry_disabled(False)
     return {**result, "enabled": bool(result.get("ok"))}
 
 
@@ -365,12 +435,19 @@ def cmd_start():
         print(json.dumps({"ok": False, "error": "re-auth already in progress"}))
         return
     set_status("starting")
+    creds = load_credentials()
+    if not creds:
+        error = "no Blink credentials; put {\"username\": ..., \"password\": ...} in " + CREDENTIALS_FILE
+        set_status("error", error=error)
+        print(json.dumps({"ok": False, "error": error}))
+        return
     repair = ensure_hardware_id()
     if not repair.get("ok"):
         set_status("error", error=repair.get("error", "hardware_id repair failed"))
         print(json.dumps(repair))
         return
-    result = docker_py(PHASE1_PY, env={"HA_TOKEN": ha_token()})
+    script = PHASE1_PY.replace("__CREDS_JSON__", json.dumps(json.dumps(creds)))
+    result = docker_py(script, env={"HA_TOKEN": ha_token()})
     if result.get("ok"):
         set_status("awaiting_code", phone=result.get("phone", ""))
     else:
@@ -403,6 +480,7 @@ def cmd_verify(code):
         for e in doc["data"]["entries"]:
             if e["domain"] == "blink":
                 e["data"].update(tokens)
+                strip_password(e["data"])
         with open(ENTRIES_FILE, "w") as f:
             json.dump(doc, f, indent=2)
         os.remove(BOOTSTRAP_HOST)
@@ -437,6 +515,57 @@ def cmd_cancel():
                       "entry_note": enabled.get("reason", "")}))
 
 
+def cmd_disable():
+    """Disable the entry while HA is stuck retrying a failed Blink sign-in.
+
+    Requested by the panel's watchdog. HA retries setup_retry roughly every
+    80 seconds forever, and each retry signs in against Blink again. Checked
+    again here because the request is asynchronous: if the entry recovered or
+    a re-auth took over in the meantime, leave it alone. Does not touch the
+    status file, which belongs to the interactive re-auth flow.
+    """
+    if busy():
+        print(json.dumps({"ok": True, "disabled": False, "reason": "re-auth in progress"}))
+        return
+    state = blink_entry_state()
+    if state != "setup_retry":
+        print(json.dumps({"ok": True, "disabled": False, "reason": "entry is " + str(state)}))
+        return
+    result = set_entry_disabled(True)
+    print(json.dumps({**result, "disabled": bool(result.get("ok"))}))
+
+
+def cmd_secure():
+    """Move the Blink password out of HA's entry into CREDENTIALS_FILE now.
+
+    A re-auth does this on its own when it installs tokens; this is for
+    doing it without one. Restarts HA, since the entry file can only be
+    edited while HA is stopped.
+    """
+    if busy():
+        print(json.dumps({"ok": False, "error": "re-auth in progress"}))
+        return
+    if not load_credentials():
+        print(json.dumps({"ok": False, "error": "no password in the entry or " + CREDENTIALS_FILE}))
+        return
+    if "password" not in blink_entry_data():
+        print(json.dumps({"ok": True, "changed": False}))
+        return
+    subprocess.run(["docker", "stop", CONTAINER], check=True, capture_output=True)
+    try:
+        subprocess.run(["cp", ENTRIES_FILE, ENTRIES_FILE + ".bak-blink-secure"], check=True)
+        with open(ENTRIES_FILE) as f:
+            doc = json.load(f)
+        for e in doc["data"]["entries"]:
+            if e["domain"] == "blink":
+                strip_password(e["data"])
+        with open(ENTRIES_FILE, "w") as f:
+            json.dump(doc, f, indent=2)
+    finally:
+        subprocess.run(["docker", "start", CONTAINER], check=True, capture_output=True)
+    print(json.dumps({"ok": wait_for_ha(), "changed": True}))
+
+
 REQUEST_FILE = SPOOL_FILE
 
 
@@ -458,6 +587,8 @@ def cmd_process_request():
             set_status("error", error="invalid code")
     elif action == "cancel":
         cmd_cancel()
+    elif action == "disable":
+        cmd_disable()
 
 
 def main():
@@ -472,6 +603,10 @@ def main():
         cmd_verify(code)
     elif action == "cancel":
         cmd_cancel()
+    elif action == "disable":
+        cmd_disable()
+    elif action == "secure":
+        cmd_secure()
     elif action == "process-request":
         cmd_process_request()
     else:

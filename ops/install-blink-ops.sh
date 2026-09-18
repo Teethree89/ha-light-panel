@@ -62,4 +62,11 @@ Installed. Now add a blinkOps section to your panel config:
   }
 
 and restart the panel. The Cameras page will grow a "Blink Status" button.
+
+The re-auth helper keeps the Blink password in
+/etc/blink-reauth/credentials.json, not in Home Assistant. It moves an
+existing password there on the first re-auth. To do it now instead (this
+restarts Home Assistant):
+
+  sudo /usr/local/sbin/blink-reauth.py secure
 DONE
