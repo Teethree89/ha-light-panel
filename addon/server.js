@@ -3008,6 +3008,17 @@ ${layoutCardMarkup()}
       return [0, 2, 4].map(index => parseInt(clean.slice(index, index + 2), 16));
     }
 
+    // applyAlarm needs this for any state other than armed/disarmed. Without
+    // it an unavailable alarm threw on every refresh and left the whole panel
+    // on placeholders.
+    function titleCase(value) {
+      return String(value || '')
+        .replace(/_/g, ' ')
+        // Double-escaped: this string is inside a template literal, so a single
+        // backslash would reach the browser stripped (\\b\\w -> bw).
+        .replace(/\\b\\w/g, letter => letter.toUpperCase());
+    }
+
     function applyAlarm(alarm) {
       const raw = String(alarm && alarm.state || 'unknown');
       const armed = raw.startsWith('armed');
