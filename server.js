@@ -22,20 +22,12 @@ const DEFAULT_CONFIG = {
   // button, its modal, and the /cameras/blink-* routes do not exist, and the
   // panel behaves exactly as it does without this section.
   //
-  // The spool paths exist because a hardened panel service (NoNewPrivileges,
-  // ProtectSystem=strict) cannot restart services or run a privileged re-auth
-  // itself. It writes a request file instead, and a root systemd .path unit
-  // watches the spool and does the work. ops/systemd/ has units for both.
+  // The restart spool exists because a hardened panel service
+  // (NoNewPrivileges, ProtectSystem=strict) cannot restart the proxy itself.
+  // A root systemd .path unit watches the request file instead.
   blinkOps: {
     proxyStatusUrl: '',
-    reauthSpool: '',
-    reauthStatus: '',
-    proxyRestartSpool: '',
-    // Server-side self-heal for setups still on HA's official Blink
-    // integration: reload it on this interval when the cameras look stuck,
-    // and disable an entry stuck failing sign-in. 0 disables it; leave it at
-    // 0 when the live-view proxy provides the cameras.
-    watchdogMs: 0
+    proxyRestartSpool: ''
   },
   server: {
     host: '0.0.0.0',
@@ -532,7 +524,6 @@ function collectEntityIds(node, found = new Set()) {
 }
 
 const BLINK_OPS = CONFIG.blinkOps || {};
-const BLINK_WATCHDOG_MS = Math.max(0, Number(BLINK_OPS.watchdogMs) || 0);
 
 // The Blink Status modal and its routes only exist when a proxy status URL is
 // configured; everything inside the modal degrades further on its own.
@@ -547,24 +538,6 @@ let stateById = {};
 let lastPollAt = 0;
 let pollPromise = null;
 let lastError = '';
-let lastBlinkReloadAt = 0;
-let consecutiveBlinkReloads = 0;
-
-const BLINK_RELOAD_COOLDOWN_MS = 5 * 60 * 1000;
-// A reload can only fix a *stuck* integration (entry loaded, entities gone
-// stale). It cannot fix expired credentials: each reload re-runs blinkpy's
-// startup, and once the refresh token is dead that falls through to a
-// password sign-in, which Blink answers with a fresh SMS code every time.
-// Reloading an entry that is already in setup_retry also resets HA's own
-// backoff, so a 5-minute watchdog turned into ~84 sign-ins an hour on
-// 2026-09-18. So the automatic path only reloads while the entry is loaded,
-// and gives up after a few consecutive reloads fail to bring the cameras back.
-const BLINK_RELOAD_MAX_CONSECUTIVE = 3;
-// How many watchdog ticks an entry may sit in setup_retry for an auth failure
-// before the watchdog asks the re-auth helper to disable it. Disabling is the
-// only thing that stops HA's own retry loop; re-auth re-enables it.
-const BLINK_AUTH_FAILURE_TICKS = 2;
-
 function readSecretText() {
   if (!SECRET_FILE || !fs.existsSync(SECRET_FILE)) return '';
   return fs.readFileSync(SECRET_FILE, 'utf8');
@@ -1312,6 +1285,9 @@ function configuredLayoutCards() {
     subEntity: card.subEntity || '',
     subAttribute: card.subAttribute || '',
     content: String(card.content || ''),
+    // Undefined means "use the entity's unit_of_measurement"; an explicit
+    // string (including '') overrides it.
+    unit: typeof card.unit === 'string' ? card.unit : undefined,
     action: isPlainObject(card.action) ? {
       service: String(card.action.service || ''),
       data: isPlainObject(card.action.data) ? card.action.data : {},
@@ -1343,16 +1319,45 @@ function configuredLayoutCards() {
   }));
 }
 
+// Generic cards may point at any entity or attribute, so values are not
+// guaranteed to be scalars: lists, objects, and booleans need readable text.
+function layoutValueText(entityId, attribute, unit, fallback) {
+  if (!entityId) return fallback;
+  if (!attribute) {
+    const value = state(entityId, '');
+    if (!isValidState(value)) return fallback;
+    const suffix = unit === undefined ? attr(entityId, 'unit_of_measurement', '') : unit;
+    return suffix ? `${value}${/^[°%]/.test(suffix) ? '' : ' '}${suffix}` : String(value);
+  }
+  const value = attr(entityId, attribute, null);
+  if (value === null || value === '') return fallback;
+  let text;
+  if (Array.isArray(value)) text = value.map(item => (isPlainObject(item) ? JSON.stringify(item) : String(item))).join(', ');
+  else if (isPlainObject(value)) text = JSON.stringify(value);
+  else text = String(value);
+  if (!text) return fallback;
+  return unit ? `${text}${/^[°%]/.test(unit) ? '' : ' '}${unit}` : text;
+}
+
 function layoutCardSummary() {
-  return configuredLayoutCards().map(card => ({
-    id: card.id,
-    value: card.type === 'text'
-      ? card.content
-      : card.type === 'action'
-        ? (card.content || 'Tap to run')
-        : specText({ entity: card.entity, attribute: card.attribute }, '--'),
-    secondary: card.type === 'text' ? '' : specText({ entity: card.subEntity, attribute: card.subAttribute }, '')
-  }));
+  return configuredLayoutCards().map(card => {
+    if (card.type === 'text') return { id: card.id, value: card.content, secondary: '' };
+    if (card.type === 'action') {
+      // An action button's optional entity is a status line (e.g. the light
+      // or script it drives), shown under the button caption.
+      return {
+        id: card.id,
+        value: card.content || 'Tap to run',
+        secondary: layoutValueText(card.entity, card.attribute, card.unit, '')
+          || layoutValueText(card.subEntity, card.subAttribute, undefined, '')
+      };
+    }
+    return {
+      id: card.id,
+      value: layoutValueText(card.entity, card.attribute, card.unit, '--'),
+      secondary: layoutValueText(card.subEntity, card.subAttribute, undefined, '')
+    };
+  });
 }
 
 function layoutCardMarkup() {
@@ -1725,25 +1730,8 @@ async function refreshCameraSnapshot(slug) {
   return cameraSummary(camera);
 }
 
-function blinkReauthStatus() {
-  if (!BLINK_OPS.reauthStatus) return { step: 'idle', updated: 0 };
-  try {
-    return JSON.parse(fs.readFileSync(BLINK_OPS.reauthStatus, 'utf8'));
-  } catch {
-    return { step: 'idle', updated: 0 };
-  }
-}
-
-// Writes the request the privileged .path unit is watching for. Written to a
-// temp file and renamed so the watcher never sees a half-written request.
-function blinkReauthRequest(action, extra = {}) {
-  if (!BLINK_OPS.reauthSpool) throw new Error('Blink re-auth is not configured.');
-  spoolWrite(BLINK_OPS.reauthSpool, JSON.stringify({ action, requestedAt: Date.now() / 1000, ...extra }), 'blink-reauth');
-}
-
-// Both spools are written to a temp file and renamed, so the watching .path
-// unit never sees a half-written request. A missing directory means the unit
-// was never installed, which is worth saying plainly.
+// The proxy restart request is written to a temporary file and renamed, so the
+// watching .path unit never sees a half-written request.
 function spoolWrite(target, body, unitName) {
   const tmp = target + '.tmp';
   try {
@@ -1760,17 +1748,6 @@ function spoolWrite(target, body, unitName) {
   }
 }
 
-// Waits until the orchestrator advances past `since` into one of `steps`.
-async function blinkReauthWait(steps, since, timeoutMs) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    await new Promise(resolve => setTimeout(resolve, 1000));
-    const status = blinkReauthStatus();
-    if (status.updated > since && steps.includes(status.step)) return status;
-  }
-  return { step: 'timeout' };
-}
-
 async function blinkProxyStatus() {
   if (!BLINK_OPS.proxyStatusUrl) return { ok: false, error: 'not configured' };
   const controller = new AbortController();
@@ -1784,31 +1761,6 @@ async function blinkProxyStatus() {
     return { ok: false, error: error.message || 'request failed' };
   } finally {
     clearTimeout(timeout);
-  }
-}
-
-// HA can hold several Blink config entries: its own "Add integration" flow
-// will create a second one for another account, and that one can sit in
-// setup_retry while the real one works. So every entry is reported, and the
-// top-level fields describe one representative entry for the status modal:
-// a loaded one if any, else an enabled one, else the first.
-async function haBlinkIntegrationStatus() {
-  try {
-    const all = await haFetch('/api/config/config_entries/entry');
-    const entries = (all || []).filter(item => item.domain === 'blink').map(item => ({
-      entryId: item.entry_id,
-      title: item.title || '',
-      state: item.state,
-      reason: item.reason || null,
-      disabledBy: item.disabled_by || null
-    }));
-    if (!entries.length) return { ok: false, error: 'no Blink config entry found', entries };
-    const primary = entries.find(item => item.state === 'loaded')
-      || entries.find(item => !item.disabledBy)
-      || entries[0];
-    return { ok: true, ...primary, entries };
-  } catch (error) {
-    return { ok: false, error: error.message || 'request failed', entries: [] };
   }
 }
 
@@ -1845,9 +1797,8 @@ function proxyNeedsAutoRestart(proxy) {
   return false;
 }
 
-// Cooldown-gated, separate from the manual "Restart Proxy" button (which always
-// runs immediately) and from BLINK_RELOAD_COOLDOWN_MS (which governs the HA
-// Blink *integration* reload, not this standalone service).
+// Cooldown-gated, separate from the manual "Restart Proxy" button, which
+// always runs immediately.
 const AUTO_PROXY_RESTART_COOLDOWN_MS = 5 * 60 * 1000;
 let lastAutoProxyRestartAt = 0;
 
@@ -1866,97 +1817,6 @@ async function autoRestartBlinkProxyIfStale() {
   lastAutoProxyRestartAt = now;
   const result = await restartBlinkProxyAndWait(30000);
   return { stale: true, restarted: true, ...result };
-}
-
-// Only the opt-in watchdog (blinkOps.watchdogMs) calls this, for setups that
-// still run HA's official Blink integration. It reloads whatever entry owns
-// the first camera's entity; once the live-view proxy provides the cameras,
-// that is the proxy's own entry and a reload does nothing useful, so leave
-// the watchdog off there. The manual Reload Blink buttons went away for the
-// same reason.
-async function reloadBlinkIntegration(options = {}) {
-  // The watchdog passes the integration status it already fetched this tick.
-  const knownIntegration = options.integration || null;
-  await pollStates(true).catch(() => {});
-  const before = CAMERAS.map(cameraSummary);
-  const needsReload = before.some(cameraNeedsBlinkReload);
-  const now = Date.now();
-  const cooldownRemainingMs = Math.max(0, BLINK_RELOAD_COOLDOWN_MS - (now - lastBlinkReloadAt));
-
-  if (!needsReload) {
-    // The cameras came back, whether by a reload or on their own, so the
-    // circuit breaker's count of failed reloads starts over.
-    consecutiveBlinkReloads = 0;
-    return {
-      ...camerasState(),
-      reloaded: false,
-      skipped: true,
-      reason: 'snapshots_available'
-    };
-  }
-
-  if (lastBlinkReloadAt && cooldownRemainingMs > 0) {
-    return {
-      ...camerasState(),
-      reloaded: false,
-      skipped: true,
-      reason: 'cooldown',
-      cooldownRemainingMs
-    };
-  }
-
-  // Any state other than `loaded` means HA is already retrying setup on its
-  // own backoff (or the entry is disabled). Piling reloads on top of that
-  // just multiplies sign-in attempts; recovering from bad credentials needs
-  // the Re-auth Blink flow, not a reload. The reload below targets whichever
-  // entry owns the first camera, which the panel cannot see, so with
-  // several entries it only runs when every enabled one is loaded.
-  const integration = knownIntegration || await haBlinkIntegrationStatus();
-  const enabled = (integration.entries || []).filter(item => !item.disabledBy);
-  const blocking = enabled.find(item => item.state !== 'loaded')
-    || (enabled.length ? null : integration);
-  if (!integration.ok || blocking) {
-    const shown = blocking || integration;
-    return {
-      ...camerasState(),
-      reloaded: false,
-      skipped: true,
-      reason: 'integration_not_loaded',
-      integrationState: shown.state || null,
-      integrationReason: shown.reason || null,
-      disabledBy: shown.disabledBy || null,
-      entryId: shown.entryId || null
-    };
-  }
-
-  if (consecutiveBlinkReloads >= BLINK_RELOAD_MAX_CONSECUTIVE) {
-    return {
-      ...camerasState(),
-      reloaded: false,
-      skipped: true,
-      reason: 'circuit_breaker',
-      consecutiveReloads: consecutiveBlinkReloads
-    };
-  }
-
-  lastBlinkReloadAt = now;
-  await haFetch('/api/services/homeassistant/reload_config_entry', {
-    method: 'POST',
-    body: JSON.stringify({ entity_id: CAMERAS[0].sourceEntity })
-  });
-  await pollStates(true).catch(() => {});
-
-  const recovered = !CAMERAS.map(cameraSummary).some(cameraNeedsBlinkReload);
-  consecutiveBlinkReloads = recovered ? 0 : consecutiveBlinkReloads + 1;
-
-  return {
-    ...camerasState(),
-    reloaded: true,
-    skipped: false,
-    reason: 'reloaded',
-    recovered,
-    consecutiveReloads: consecutiveBlinkReloads
-  };
 }
 
 async function toggleCameraMotion(slug) {
@@ -3535,11 +3395,10 @@ function frameoDeviceBootstrapScript() {
   </script>`;
 }
 
-// ── Blink ops UI ───────────────────────────────────────────────────────────
-// The Blink Status modal: live-view proxy health, HA Blink integration state,
-// a proxy restart, and the SMS re-auth flow. All three pieces return '' unless
-// blinkOps.proxyStatusUrl is configured, so the cameras page renders exactly as
-// it did before this section existed.
+// ── Blink live-view proxy UI ───────────────────────────────────────────────
+// The status modal and restart control return '' unless proxy status is
+// configured, so the cameras page renders exactly as it did before this
+// section existed.
 
 function blinkOpsStyles() {
   if (!blinkOpsEnabled()) return '';
@@ -3621,45 +3480,6 @@ function blinkOpsStyles() {
       margin-top: 10px;
       background: #0369a1;
     }
-    .modal-action-warn {
-      background: #b45309;
-    }
-    .modal-action-indigo {
-      background: #4f46e5;
-    }
-    .reauth-code {
-      margin-top: 14px;
-      padding-top: 12px;
-      border-top: 1px solid rgba(255,255,255,0.08);
-    }
-    .reauth-code-label {
-      display: block;
-      font-size: 13px;
-      color: rgba(248,250,252,0.62);
-      margin-bottom: 8px;
-    }
-    .reauth-code-input {
-      width: 100%;
-      box-sizing: border-box;
-      padding: 12px;
-      border: 1px solid rgba(255,255,255,0.18);
-      border-radius: 8px;
-      background: #0f172a;
-      color: #f8fafc;
-      font-size: 22px;
-      font-weight: 850;
-      letter-spacing: 6px;
-      text-align: center;
-    }
-    .reauth-code-input:focus {
-      outline: 2px solid #4f46e5;
-    }
-    .reauth-code-error {
-      margin-top: 8px;
-      font-size: 13px;
-      font-weight: 700;
-      color: #fca5a5;
-    }
     .modal-action:active, .modal-close:active {
       opacity: 0.8;
     }
@@ -3685,7 +3505,7 @@ function blinkOpsMarkup() {
   if (!blinkOpsEnabled()) return '';
   return `  <div id="tokenModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="tokenModalTitle">
     <div class="modal">
-      <h2 id="tokenModalTitle">Blink Token Status</h2>
+      <h2 id="tokenModalTitle">Live View Proxy Status</h2>
 
       <h3>Live view proxy</h3>
       <div id="proxyStatusRows">
@@ -3697,19 +3517,6 @@ function blinkOpsMarkup() {
       </div>
       <div id="proxyUnreachableRow" class="row hidden"><span class="k">Status</span><span id="proxyError" class="v">--</span></div>
       <button id="restartProxyButton" class="modal-action" type="button">Restart Proxy</button>
-
-      <h3>HA Blink integration</h3>
-      <div class="row"><span class="k">State</span><span id="integrationState" class="v">--</span></div>
-      <div id="integrationReasonRow" class="row hidden"><span class="k">Reason</span><span id="integrationReason" class="v">--</span></div>
-      <button id="blinkReauthButton" class="modal-action modal-action-warn hidden" type="button">Re-auth Blink</button>
-      <div id="reauthStatusRow" class="row hidden"><span class="k">Re-auth</span><span id="reauthStatusText" class="v">--</span></div>
-      <div id="reauthCodeRow" class="reauth-code hidden">
-        <label class="reauth-code-label" for="reauthCodeInput">SMS code sent to <span id="reauthCodePhone">your phone</span></label>
-        <input id="reauthCodeInput" class="reauth-code-input" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="10" placeholder="000000">
-        <div id="reauthCodeError" class="reauth-code-error hidden"></div>
-        <button id="reauthCodeSubmit" class="modal-action modal-action-indigo" type="button">Submit code</button>
-        <button id="reauthCodeCancel" class="modal-action" type="button">Cancel re-auth</button>
-      </div>
 
       <button id="tokenModalClose" class="modal-close" type="button">Close</button>
     </div>
@@ -3725,156 +3532,7 @@ function blinkOpsMarkup() {
 
 function blinkOpsScript() {
   if (!blinkOpsEnabled()) return '';
-  return `    const reauthStepText = {
-      starting: 'Contacting Blink...',
-      awaiting_code: 'Waiting for SMS code',
-      verifying: 'Verifying code...',
-      installing_tokens: 'Installing tokens (Home Assistant restarting)...',
-      enabling: 'Re-enabling integration...',
-      done: 'Re-auth complete',
-      cancelled: 'Re-auth cancelled',
-      error: 'Re-auth failed'
-    };
-    let reauthTimer = null;
-    let reauthInFlight = false;
-
-    function setReauthStatus(text) {
-      const row = document.getElementById('reauthStatusRow');
-      if (!text) {
-        row.classList.add('hidden');
-        return;
-      }
-      row.classList.remove('hidden');
-      setText('reauthStatusText', text);
-    }
-
-    function watchReauth() {
-      reauthInFlight = true;
-      if (reauthTimer) clearInterval(reauthTimer);
-      reauthTimer = setInterval(async () => {
-        let status;
-        try {
-          status = await (await fetch('/cameras/blink-reauth/status', { cache: 'no-store' })).json();
-        } catch (error) {
-          return;
-        }
-        const text = reauthStepText[status.step];
-        if (text) setReauthStatus(status.step === 'error' && status.error ? text + ': ' + status.error : text);
-        if (status.step === 'done' || status.step === 'error' || status.step === 'cancelled') {
-          clearInterval(reauthTimer);
-          reauthTimer = null;
-          reauthInFlight = false;
-          if (status.step === 'done') setTimeout(() => refreshState(), 5000);
-          loadTokenStatus();
-        }
-      }, 3000);
-    }
-
-    // Ask for the SMS code inside the modal rather than via window.prompt.
-    // Digits are filtered without a regex on purpose: this whole page is built
-    // inside a template literal, so a "\d" written here reaches the browser as
-    // a bare "d". That is exactly how the old check became /^d{4,8}$/, which
-    // could never match a numeric code - every correctly typed code was thrown
-    // away and the re-auth silently cancelled, burning the SMS. A mistyped code
-    // now shows an inline error and can be corrected without ending the session.
-    function askForCode(phone) {
-      return new Promise(resolve => {
-        const row = document.getElementById('reauthCodeRow');
-        const input = document.getElementById('reauthCodeInput');
-        const errorBox = document.getElementById('reauthCodeError');
-        const submit = document.getElementById('reauthCodeSubmit');
-        const cancel = document.getElementById('reauthCodeCancel');
-        document.getElementById('reauthCodePhone').textContent = phone || 'your phone';
-        input.value = '';
-        errorBox.classList.add('hidden');
-        row.classList.remove('hidden');
-        try { input.focus(); } catch (error) {}
-
-        function digitsOf(value) {
-          return String(value || '').split('').filter(ch => ch >= '0' && ch <= '9').join('');
-        }
-        function finish(value) {
-          row.classList.add('hidden');
-          submit.removeEventListener('pointerup', onSubmit);
-          cancel.removeEventListener('pointerup', onCancel);
-          input.removeEventListener('keydown', onKey);
-          resolve(value);
-        }
-        function onSubmit(event) {
-          if (event) event.preventDefault();
-          const digits = digitsOf(input.value);
-          if (digits.length < 4) {
-            errorBox.textContent = 'Enter the numeric code from the text message.';
-            errorBox.classList.remove('hidden');
-            try { input.focus(); } catch (error) {}
-            return;
-          }
-          finish(digits);
-        }
-        function onCancel(event) {
-          if (event) event.preventDefault();
-          finish(null);
-        }
-        function onKey(event) {
-          if (event.key === 'Enter') onSubmit(event);
-        }
-        submit.addEventListener('pointerup', onSubmit);
-        cancel.addEventListener('pointerup', onCancel);
-        input.addEventListener('keydown', onKey);
-      });
-    }
-
-    async function reauthBlink() {
-      if (!window.confirm('Re-authenticate Blink? An SMS code will be texted to you and Home Assistant will restart at the end.')) return;
-      reauthInFlight = true;
-      setReauthStatus(reauthStepText.starting);
-      let out;
-      try {
-        out = await (await fetch('/cameras/blink-reauth/start', { method: 'POST' })).json();
-      } catch (error) {
-        setReauthStatus('Failed to start');
-        reauthInFlight = false;
-        return;
-      }
-      if (!out.ok) {
-        setReauthStatus(out.error || 'Failed to start');
-        reauthInFlight = false;
-        return;
-      }
-      const code = await askForCode(out.phone);
-      if (code === null) {
-        await fetch('/cameras/blink-reauth/cancel', { method: 'POST' }).catch(() => {});
-        setReauthStatus(reauthStepText.cancelled);
-        reauthInFlight = false;
-        return;
-      }
-      setReauthStatus(reauthStepText.verifying);
-      try {
-        const verify = await (await fetch('/cameras/blink-reauth/verify', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ code })
-        })).json();
-        if (!verify.ok) {
-          setReauthStatus(verify.error || 'Verify failed');
-          await fetch('/cameras/blink-reauth/cancel', { method: 'POST' }).catch(() => {});
-          reauthInFlight = false;
-          return;
-        }
-      } catch (error) {
-        setReauthStatus('Verify request failed');
-        reauthInFlight = false;
-        return;
-      }
-      watchReauth();
-    }
-
-    document.getElementById('blinkReauthButton').addEventListener('pointerup', event => {
-      reauthBlink();
-      event.preventDefault();
-    });
-
-    document.getElementById('restartProxyButton').addEventListener('pointerup', async event => {
+  return `    document.getElementById('restartProxyButton').addEventListener('pointerup', async event => {
       event.preventDefault();
       const button = document.getElementById('restartProxyButton');
       if (button.disabled) return;
@@ -3920,13 +3578,8 @@ function blinkOpsScript() {
       return false;
     }
 
-    function integrationIsUnhealthy(integration) {
-      return !integration.ok || integration.state !== 'loaded';
-    }
-
-    function updateStatusDots(proxy, integration) {
+    function updateStatusDots(proxy) {
       setAttr('proxyDot', 'fill', proxyIsUnhealthy(proxy) ? '#dc2626' : '#16a34a');
-      setAttr('integrationDot', 'fill', integrationIsUnhealthy(integration) ? '#dc2626' : '#16a34a');
     }
 
     const proxyRefreshOverlay = document.getElementById('proxyRefreshOverlay');
@@ -3978,8 +3631,6 @@ function blinkOpsScript() {
 
     function renderTokenStatus(data) {
       const proxy = data.proxy || {};
-      const integration = data.integration || {};
-      const reauth = data.reauth || {};
 
       const proxyRows = document.getElementById('proxyStatusRows');
       const proxyUnreachableRow = document.getElementById('proxyUnreachableRow');
@@ -3997,28 +3648,7 @@ function blinkOpsScript() {
         setText('proxyError', 'Unreachable: ' + (proxy.error || 'unknown error'));
       }
 
-      setText('integrationState', integration.ok ? integration.state : (integration.error || 'unknown error'));
-      const reasonRow = document.getElementById('integrationReasonRow');
-      if (integration.ok && integration.reason) {
-        reasonRow.classList.remove('hidden');
-        setText('integrationReason', integration.reason);
-      } else {
-        reasonRow.classList.add('hidden');
-      }
-
-      const reauthButton = document.getElementById('blinkReauthButton');
-      if (reauthInFlight) {
-        reauthButton.classList.add('hidden');
-      } else {
-        reauthButton.classList.toggle('hidden', !integrationIsUnhealthy(integration));
-        if (reauth.step && reauth.step !== 'idle' && reauth.step !== 'done' && reauth.step !== 'cancelled') {
-          setReauthStatus(reauthStepText[reauth.step] || reauth.step);
-        } else {
-          setReauthStatus('');
-        }
-      }
-
-      updateStatusDots(proxy, integration);
+      updateStatusDots(proxy);
       checkAutoRestartProxy(proxy);
     }
 
@@ -4181,7 +3811,6 @@ ${blinkOpsEnabled()
       <rect width="144" height="52" rx="8" fill="#0369a1"/>
       <text x="72" y="38" text-anchor="middle" fill="#fff" font-size="17" font-weight="850">Blink Status</text>
       <circle id="proxyDot" cx="122" cy="12" r="5" fill="#16a34a" stroke="#0369a1" stroke-width="1.5"/>
-      <circle id="integrationDot" cx="137" cy="12" r="5" fill="#16a34a" stroke="#0369a1" stroke-width="1.5"/>
     </g>`
       : ''}
     <g class="button" id="micTestButton" transform="translate(${blinkOpsEnabled() ? 776 : 944} 20)">
@@ -6925,66 +6554,8 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (blinkOpsEnabled() && url.pathname.startsWith('/cameras/blink-')) {
-      if (req.method === 'POST' && url.pathname === '/cameras/blink-reauth/start') {
-        const since = Date.now() / 1000;
-        try {
-          blinkReauthRequest('start');
-        } catch (error) {
-          sendJson(res, 200, { ok: false, error: error.message });
-          return;
-        }
-        const status = await blinkReauthWait(['awaiting_code', 'error'], since, 60000);
-        if (status.step === 'awaiting_code') {
-          sendJson(res, 200, { ok: true, phone: status.phone || '' });
-        } else {
-          sendJson(res, 200, { ok: false, error: status.error || 'start timed out' });
-        }
-        return;
-      }
-
-      if (req.method === 'POST' && url.pathname === '/cameras/blink-reauth/verify') {
-        const payload = await readJson(req).catch(() => ({}));
-        const code = String(payload.code || '').trim();
-        if (!/^[0-9]{4,8}$/.test(code)) {
-          sendJson(res, 400, { ok: false, error: 'invalid code' });
-          return;
-        }
-        // Verify restarts Home Assistant and takes minutes; the client follows
-        // /cameras/blink-reauth/status for progress.
-        try {
-          blinkReauthRequest('verify', { code });
-        } catch (error) {
-          sendJson(res, 200, { ok: false, error: error.message });
-          return;
-        }
-        sendJson(res, 200, { ok: true });
-        return;
-      }
-
-      if (req.method === 'POST' && url.pathname === '/cameras/blink-reauth/cancel') {
-        const since = Date.now() / 1000;
-        try {
-          blinkReauthRequest('cancel');
-        } catch (error) {
-          sendJson(res, 200, { ok: false, error: error.message });
-          return;
-        }
-        const status = await blinkReauthWait(['cancelled'], since, 30000);
-        sendJson(res, 200, { ok: status.step === 'cancelled' });
-        return;
-      }
-
-      if (req.method === 'GET' && url.pathname === '/cameras/blink-reauth/status') {
-        sendJson(res, 200, blinkReauthStatus());
-        return;
-      }
-
       if (req.method === 'GET' && url.pathname === '/cameras/blink-token-status') {
-        const [proxy, integration] = await Promise.all([
-          blinkProxyStatus(),
-          haBlinkIntegrationStatus()
-        ]);
-        sendJson(res, 200, { proxy, integration, reauth: blinkReauthStatus() });
+        sendJson(res, 200, { proxy: await blinkProxyStatus() });
         return;
       }
 
@@ -7228,93 +6799,3 @@ server.listen(PORT, HOST, () => {
 pollStates(true).catch(error => {
   console.error(`Initial HA poll failed: ${error.message}`);
 });
-
-// Server-side self-heal. The "stuck Blink" reload used to run only while the
-// /cameras page was open in a browser, so the fix landed only when someone
-// happened to visit that page. On a timer it runs regardless. Only logs when
-// the outcome changes, so a long-lived skip states itself once instead of
-// every tick. Disabled unless blinkOps.watchdogMs is set.
-let lastBlinkWatchdogReason = '';
-// Per config entry id: consecutive ticks spent failing sign-in, and whether a
-// disable has already been asked for.
-const blinkAuthFailureTicks = new Map();
-const blinkDisableRequested = new Set();
-
-// HA marks a Blink entry that failed on the network with the reason "Can not
-// connect to host", and one whose sign-in failed with no reason at all. Only
-// the second needs a human: HA retries it every ~80 seconds forever, and each
-// retry is another sign-in attempt against Blink.
-function blinkEntryAuthFailure(entry) {
-  if (entry.disabledBy || entry.state !== 'setup_retry') return false;
-  return !/connect/i.test(String(entry.reason || ''));
-}
-
-// The panel cannot disable a config entry itself (that is websocket-only, and
-// the service may not reach HA's websocket), so it asks the root re-auth
-// helper to disable that one entry. Re-auth Blink re-enables its own entry
-// once fresh tokens are installed. Every entry is checked, because a stray
-// second entry fails on its own schedule while the real one stays loaded.
-function maybeDisableFailingBlinkEntries(integration) {
-  if (!integration.ok) return;
-  const failing = new Set();
-  for (const entry of integration.entries) {
-    if (!blinkEntryAuthFailure(entry)) continue;
-    failing.add(entry.entryId);
-    blinkAuthFailureTicks.set(entry.entryId, (blinkAuthFailureTicks.get(entry.entryId) || 0) + 1);
-  }
-  for (const entryId of [...blinkAuthFailureTicks.keys()]) {
-    if (!failing.has(entryId)) blinkAuthFailureTicks.delete(entryId);
-  }
-  for (const entryId of [...blinkDisableRequested]) {
-    if (!failing.has(entryId)) blinkDisableRequested.delete(entryId);
-  }
-  if (!BLINK_OPS.reauthSpool) return;
-  // The helper reads one request file, so ask for one entry per tick; a
-  // second failing entry is picked up on the next tick.
-  const target = [...failing].find(entryId =>
-    !blinkDisableRequested.has(entryId) && blinkAuthFailureTicks.get(entryId) >= BLINK_AUTH_FAILURE_TICKS);
-  if (!target) return;
-  // Leave a re-auth that is in flight alone; an abandoned one goes stale.
-  const reauth = blinkReauthStatus();
-  const reauthActive = ['starting', 'awaiting_code', 'verifying', 'installing_tokens', 'enabling'].includes(reauth.step);
-  if (reauthActive && Date.now() / 1000 - (reauth.updated || 0) < 15 * 60) return;
-  const entry = integration.entries.find(item => item.entryId === target);
-  try {
-    blinkReauthRequest('disable', { entry_id: target, reason: 'watchdog: sign-in failing, HA retrying setup' });
-    blinkDisableRequested.add(target);
-    console.warn(`Blink watchdog: Blink sign-in is failing for entry ${target}${entry.title ? ` (${entry.title})` : ''} and HA keeps retrying it; asked the re-auth helper to disable that entry (use Re-auth Blink to restore it, or delete the entry in HA if it is a stray)`);
-  } catch (error) {
-    console.error(`Blink watchdog could not request disable: ${error.message}`);
-  }
-}
-
-async function blinkWatchdogTick() {
-  const integration = await haBlinkIntegrationStatus();
-  maybeDisableFailingBlinkEntries(integration);
-  return reloadBlinkIntegration({ integration });
-}
-
-function runBlinkWatchdogTick() {
-  blinkWatchdogTick().then(result => {
-    const reason = result.reason || '';
-    if (reason === lastBlinkWatchdogReason) return;
-    lastBlinkWatchdogReason = reason;
-    if (reason === 'integration_not_loaded') {
-      const disabled = result.disabledBy ? ` (disabled by ${result.disabledBy})` : '';
-      const which = result.entryId ? ` (entry ${result.entryId})` : '';
-      console.warn(`Blink watchdog: integration is ${result.integrationState || 'not loaded'}${which}${disabled}; skipping reload (a reload cannot fix credentials \u2014 use Re-auth Blink)`);
-    } else if (reason === 'circuit_breaker') {
-      console.warn(`Blink watchdog: ${result.consecutiveReloads} consecutive reloads did not restore the cameras; pausing until they recover`);
-    } else if (reason === 'reloaded') {
-      console.log(`Blink watchdog: reloaded Blink integration (recovered=${result.recovered})`);
-    }
-  }).catch(error => {
-    console.error(`Blink watchdog reload failed: ${error.message}`);
-  });
-}
-
-if (BLINK_WATCHDOG_MS > 0) {
-  console.log(`Blink watchdog: enabled, checking every ${Math.round(BLINK_WATCHDOG_MS / 1000)}s`);
-  runBlinkWatchdogTick();
-  setInterval(runBlinkWatchdogTick, BLINK_WATCHDOG_MS);
-}

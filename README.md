@@ -21,7 +21,7 @@ If this saves you a little time, [buy me a coffee](https://paypal.me/ABPaintball
 - Temperature, humidity, battery, HVAC mode, comfort band, and status-panel cards
 - Optional camera snapshot grid
 - Optional settings page for humidity-biased cooling and seasonal mode
-- Optional Blink live-view proxy integration hooks, health modal, and SMS re-auth
+- Optional Blink live-view proxy integration hooks, health modal, and restart control
 - Service-backed action buttons for comfort tweaks and room balancing
 - HACS integration that proxies the panel through Home Assistant, so it works
   over Nabu Casa and anything else that only tunnels port 8123

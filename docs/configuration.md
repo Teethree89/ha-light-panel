@@ -530,94 +530,45 @@ returns 404, and the Cameras button keeps its full width. `maintenance`,
 `humidityCooling` and `seasonalMode` are independent: configure one and only
 that control renders.
 
-## Blink Ops
+## Live View Proxy Operations
 
 Optional operations tooling for a [Blink live-view proxy][proxy] running
 alongside the panel. It adds a **Blink Status** button to the Cameras page
-whose modal shows live-view proxy health and Home Assistant Blink integration
-state, and offers a proxy restart and an SMS re-auth flow.
+whose modal shows proxy health and offers a proxy restart.
 
 ```json
 "blinkOps": {
   "proxyStatusUrl": "http://127.0.0.1:8088/status",
-  "reauthSpool": "/var/spool/blink-reauth/request.json",
-  "reauthStatus": "/run/blink-reauth/status.json",
-  "proxyRestartSpool": "/var/spool/blink-liveview-proxy-restart/request",
-  "watchdogMs": 30000
+  "proxyRestartSpool": "/var/spool/blink-liveview-proxy-restart/request"
 }
 ```
 
 | Key | Effect when set |
 |---|---|
 | `proxyStatusUrl` | Enables the whole feature. Without it none of the UI or the `/cameras/blink-*` routes exist. |
-| `reauthSpool` / `reauthStatus` | Enables the SMS re-auth flow. |
 | `proxyRestartSpool` | Enables **Restart Proxy** and the automatic restart when the proxy looks stale on page open. |
-| `watchdogMs` | Checks the Blink integration on this interval and reloads it when the cameras look stuck. `0` disables it. Only useful while HA's official Blink integration provides the cameras. |
 
-There is no manual **Reload Blink** button. It reloaded whichever integration
-owned the first camera's entity. Once the live-view proxy provides the
-cameras, that is the proxy's own entry, and reloading it never helps. The
-watchdog's reload is for setups that still run the official integration.
-
-### Why the watchdog is conservative
-
-Blink texts a 2FA code for every password sign-in. Home Assistant's Blink
-integration falls back to a password sign-in whenever its refresh token fails,
-and it retries that every minute or so for as long as the entry stays in
-`setup_retry`. It cannot finish the 2FA step itself, so each retry is just
-another text. So:
-
-- The watchdog reloads only an entry that is `loaded` with stale cameras. It
-  never reloads one that is retrying setup, and it stops after 3 reloads in a
-  row that don't bring the cameras back.
-- If the entry is retrying setup because sign-in failed (not because Blink was
-  unreachable), the watchdog asks the re-auth helper to **disable** it. That
-  stops the retries. **Re-auth Blink** re-enables it once new tokens are in.
-- The re-auth helper keeps the Blink password in
-  `/etc/blink-reauth/credentials.json` (root, `0600`), not in Home Assistant.
-  On first use it copies the password out of the config entry and removes it
-  from the entry the next time it installs tokens (or right away with
-  `sudo blink-reauth.py secure`, which restarts Home Assistant). Without a
-  password Home Assistant's fallback sign-in cannot trigger a text; only a
-  re-auth that a person starts can.
-- If Blink rate-limits the sign-in (HTTP 429), the re-auth status shows the
-  wait only when Blink says how long it is. Otherwise it says to wait, possibly
-  until the next day: a lockout can last hours. The status file keeps the HTTP
-  status and a short, credential-free snippet of Blink's reply.
-
-### More than one Blink config entry
-
-Home Assistant's own **Add integration → Blink** flow can create a second
-Blink entry, for example for another account. The panel and the helper handle
-that:
-
-- The re-auth helper only ever reads and rewrites the entry whose `unique_id`
-  is the `username` in `credentials.json`. Other Blink entries are never
-  given its tokens. With several entries and no `credentials.json`, a re-auth
-  refuses to guess.
-- The watchdog checks every Blink entry. An entry that keeps failing sign-in is
-  disabled on its own (the request names its `entry_id`), even while another
-  entry stays loaded. The automatic reload waits until every enabled entry is
-  `loaded`, because the panel can't tell which entry owns the cameras.
-- The Blink Status modal shows a loaded entry if there is one. Delete a stray
-  entry in **Settings → Devices & services → Blink**.
-
-Override the credentials path with `BLINK_CREDENTIALS_FILE` in the
-`blink-reauth.service` environment.
-
-The spool paths exist because the panel service is hardened
-(`NoNewPrivileges`, `ProtectSystem=strict`) and cannot restart services or run
-a privileged re-auth itself. It writes a request file instead; root systemd
-`.path` units watch those files and do the work. Install that half with:
+The restart spool exists because the panel service is hardened
+(`NoNewPrivileges`, `ProtectSystem=strict`) and cannot restart the proxy
+itself. It writes a request file instead; a root systemd `.path` unit watches
+it and does the work. Install that half with:
 
 ```sh
 sudo ops/install-blink-ops.sh
 ```
 
-which drops `scripts/blink-reauth.py` into `/usr/local/sbin`, creates the spool
-directories, installs the units from `ops/systemd/`, and adds the
-`ReadWritePaths` drop-in the hardened service needs. If a spool directory is
-missing the panel says so in the modal rather than failing silently.
+which creates the proxy-restart spool directory, installs its unit from
+`ops/systemd/`, and adds the `ReadWritePaths` drop-in the hardened service
+needs. If the directory is missing the panel says so in the modal rather than
+failing silently.
+
+### Upgrading from 0.8.0
+
+The panel no longer manages Home Assistant's official Blink integration or
+performs SMS re-authentication. Remove `reauthSpool`, `reauthStatus`, and
+`watchdogMs` from `blinkOps`. Re-run `sudo ops/install-blink-ops.sh` to disable
+and remove the old re-auth unit and helper. If it contains a no-longer-needed
+password, delete `/etc/blink-reauth/credentials.json` yourself.
 
 [proxy]: https://github.com/Teethree89/ha-blink-live-view-proxy
 
