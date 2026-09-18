@@ -535,8 +535,7 @@ that control renders.
 Optional operations tooling for a [Blink live-view proxy][proxy] running
 alongside the panel. It adds a **Blink Status** button to the Cameras page
 whose modal shows live-view proxy health and Home Assistant Blink integration
-state, and offers a proxy restart, an integration reload, and an SMS re-auth
-flow.
+state, and offers a proxy restart and an SMS re-auth flow.
 
 ```json
 "blinkOps": {
@@ -553,7 +552,12 @@ flow.
 | `proxyStatusUrl` | Enables the whole feature. Without it none of the UI or the `/cameras/blink-*` routes exist. |
 | `reauthSpool` / `reauthStatus` | Enables the SMS re-auth flow. |
 | `proxyRestartSpool` | Enables **Restart Proxy** and the automatic restart when the proxy looks stale on page open. |
-| `watchdogMs` | Checks the Blink integration on this interval and reloads it when the cameras look stuck. `0` disables it. |
+| `watchdogMs` | Checks the Blink integration on this interval and reloads it when the cameras look stuck. `0` disables it. Only useful while HA's official Blink integration provides the cameras. |
+
+There is no manual **Reload Blink** button. It reloaded whichever integration
+owned the first camera's entity. Once the live-view proxy provides the
+cameras, that is the proxy's own entry, and reloading it never helps. The
+watchdog's reload is for setups that still run the official integration.
 
 ### Why the watchdog is conservative
 

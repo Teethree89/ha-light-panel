@@ -31,8 +31,10 @@ const DEFAULT_CONFIG = {
     reauthSpool: '',
     reauthStatus: '',
     proxyRestartSpool: '',
-    // Server-side self-heal: reload the HA Blink integration on this interval
-    // when the cameras look stuck. 0 disables it.
+    // Server-side self-heal for setups still on HA's official Blink
+    // integration: reload it on this interval when the cameras look stuck,
+    // and disable an entry stuck failing sign-in. 0 disables it; leave it at
+    // 0 when the live-view proxy provides the cameras.
     watchdogMs: 0
   },
   server: {
@@ -1866,8 +1868,13 @@ async function autoRestartBlinkProxyIfStale() {
   return { stale: true, restarted: true, ...result };
 }
 
+// Only the opt-in watchdog (blinkOps.watchdogMs) calls this, for setups that
+// still run HA's official Blink integration. It reloads whatever entry owns
+// the first camera's entity; once the live-view proxy provides the cameras,
+// that is the proxy's own entry and a reload does nothing useful, so leave
+// the watchdog off there. The manual Reload Blink buttons went away for the
+// same reason.
 async function reloadBlinkIntegration(options = {}) {
-  const force = Boolean(options.force);
   // The watchdog passes the integration status it already fetched this tick.
   const knownIntegration = options.integration || null;
   await pollStates(true).catch(() => {});
@@ -1876,7 +1883,7 @@ async function reloadBlinkIntegration(options = {}) {
   const now = Date.now();
   const cooldownRemainingMs = Math.max(0, BLINK_RELOAD_COOLDOWN_MS - (now - lastBlinkReloadAt));
 
-  if (!force && !needsReload) {
+  if (!needsReload) {
     // The cameras came back, whether by a reload or on their own, so the
     // circuit breaker's count of failed reloads starts over.
     consecutiveBlinkReloads = 0;
@@ -1888,7 +1895,7 @@ async function reloadBlinkIntegration(options = {}) {
     };
   }
 
-  if (!force && lastBlinkReloadAt && cooldownRemainingMs > 0) {
+  if (lastBlinkReloadAt && cooldownRemainingMs > 0) {
     return {
       ...camerasState(),
       reloaded: false,
@@ -1898,44 +1905,41 @@ async function reloadBlinkIntegration(options = {}) {
     };
   }
 
-  if (!force) {
-    // Any state other than `loaded` means HA is already retrying setup on its
-    // own backoff (or the entry is disabled). Piling reloads on top of that
-    // just multiplies sign-in attempts; recovering from bad credentials needs
-    // the Re-auth Blink flow, not a reload. The reload below targets whichever
-    // entry owns the first camera, which the panel cannot see, so with
-    // several entries it only runs when every enabled one is loaded.
-    const integration = knownIntegration || await haBlinkIntegrationStatus();
-    const enabled = (integration.entries || []).filter(item => !item.disabledBy);
-    const blocking = enabled.find(item => item.state !== 'loaded')
-      || (enabled.length ? null : integration);
-    if (!integration.ok || blocking) {
-      const shown = blocking || integration;
-      return {
-        ...camerasState(),
-        reloaded: false,
-        skipped: true,
-        reason: 'integration_not_loaded',
-        integrationState: shown.state || null,
-        integrationReason: shown.reason || null,
-        disabledBy: shown.disabledBy || null,
-        entryId: shown.entryId || null
-      };
-    }
+  // Any state other than `loaded` means HA is already retrying setup on its
+  // own backoff (or the entry is disabled). Piling reloads on top of that
+  // just multiplies sign-in attempts; recovering from bad credentials needs
+  // the Re-auth Blink flow, not a reload. The reload below targets whichever
+  // entry owns the first camera, which the panel cannot see, so with
+  // several entries it only runs when every enabled one is loaded.
+  const integration = knownIntegration || await haBlinkIntegrationStatus();
+  const enabled = (integration.entries || []).filter(item => !item.disabledBy);
+  const blocking = enabled.find(item => item.state !== 'loaded')
+    || (enabled.length ? null : integration);
+  if (!integration.ok || blocking) {
+    const shown = blocking || integration;
+    return {
+      ...camerasState(),
+      reloaded: false,
+      skipped: true,
+      reason: 'integration_not_loaded',
+      integrationState: shown.state || null,
+      integrationReason: shown.reason || null,
+      disabledBy: shown.disabledBy || null,
+      entryId: shown.entryId || null
+    };
+  }
 
-    if (consecutiveBlinkReloads >= BLINK_RELOAD_MAX_CONSECUTIVE) {
-      return {
-        ...camerasState(),
-        reloaded: false,
-        skipped: true,
-        reason: 'circuit_breaker',
-        consecutiveReloads: consecutiveBlinkReloads
-      };
-    }
+  if (consecutiveBlinkReloads >= BLINK_RELOAD_MAX_CONSECUTIVE) {
+    return {
+      ...camerasState(),
+      reloaded: false,
+      skipped: true,
+      reason: 'circuit_breaker',
+      consecutiveReloads: consecutiveBlinkReloads
+    };
   }
 
   lastBlinkReloadAt = now;
-  if (force) consecutiveBlinkReloads = 0;
   await haFetch('/api/services/homeassistant/reload_config_entry', {
     method: 'POST',
     body: JSON.stringify({ entity_id: CAMERAS[0].sourceEntity })
@@ -3697,7 +3701,6 @@ function blinkOpsMarkup() {
       <h3>HA Blink integration</h3>
       <div class="row"><span class="k">State</span><span id="integrationState" class="v">--</span></div>
       <div id="integrationReasonRow" class="row hidden"><span class="k">Reason</span><span id="integrationReason" class="v">--</span></div>
-      <button id="reloadBlinkButton" class="modal-action modal-action-indigo" type="button">Reload Blink</button>
       <button id="blinkReauthButton" class="modal-action modal-action-warn hidden" type="button">Re-auth Blink</button>
       <div id="reauthStatusRow" class="row hidden"><span class="k">Re-auth</span><span id="reauthStatusText" class="v">--</span></div>
       <div id="reauthCodeRow" class="reauth-code hidden">
@@ -3883,27 +3886,6 @@ function blinkOpsScript() {
         button.textContent = result.ok ? 'Restarted' : 'Restart failed';
       } catch (error) {
         button.textContent = 'Restart failed';
-      }
-      loadTokenStatus();
-      setTimeout(() => {
-        button.textContent = original;
-        button.disabled = false;
-      }, 2000);
-    });
-
-    document.getElementById('reloadBlinkButton').addEventListener('pointerup', async event => {
-      event.preventDefault();
-      const button = document.getElementById('reloadBlinkButton');
-      if (button.disabled) return;
-      button.disabled = true;
-      const original = button.textContent;
-      button.textContent = 'Reloading...';
-      try {
-        await reloadBlink(true);
-        await refreshState();
-        button.textContent = 'Reloaded';
-      } catch (error) {
-        button.textContent = 'Reload failed';
       }
       loadTokenStatus();
       setTimeout(() => {
@@ -4201,10 +4183,7 @@ ${blinkOpsEnabled()
       <circle id="proxyDot" cx="122" cy="12" r="5" fill="#16a34a" stroke="#0369a1" stroke-width="1.5"/>
       <circle id="integrationDot" cx="137" cy="12" r="5" fill="#16a34a" stroke="#0369a1" stroke-width="1.5"/>
     </g>`
-      : `    <g class="button" id="blinkReloadButton" transform="translate(776 20)">
-      <rect width="144" height="52" rx="8" fill="#4f46e5"/>
-      <text x="72" y="34" text-anchor="middle" fill="#fff" font-size="17" font-weight="850">Reload Blink</text>
-    </g>`}
+      : ''}
     <g class="button" id="micTestButton" transform="translate(${blinkOpsEnabled() ? 776 : 944} 20)">
       <rect width="144" height="52" rx="8" fill="#0f766e"/>
       <text x="72" y="34" text-anchor="middle" fill="#fff" font-size="16" font-weight="850">Panel Admin</text>
@@ -4218,7 +4197,6 @@ ${blinkOpsEnabled()
 ${blinkOpsMarkup()}
   <script>
     const slugs = ${JSON.stringify(CAMERAS.map(camera => camera.slug))};
-    let autoBlinkReloadAttempted = false;
     let refreshInFlight = false;
     const reloadingSlugs = new Set();
     const reloadTimers = new Map();
@@ -4303,39 +4281,6 @@ ${blinkOpsMarkup()}
       }
     }
 
-    async function refreshCameraImages() {
-      await Promise.allSettled(slugs.map(async slug => {
-        setReloading(slug, true);
-        try {
-          await loadAndSwapSnapshot(slug);
-        } finally {
-          setReloading(slug, false);
-        }
-      }));
-    }
-
-    async function reloadBlink(force) {
-      setText('cameraStatus', force ? 'Reloading Blink' : 'Restoring Blink snapshots');
-      const response = await fetch('/cameras/reload-blink', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ force: Boolean(force) })
-      });
-      const data = await response.json();
-      if (!response.ok || data.ok === false) throw new Error(data.error || 'Blink reload failed');
-      for (const camera of data.cameras || []) applyCamera(camera);
-      await refreshCameraImages();
-      setText('cameraStatus', data.reloaded ? 'Blink reloaded | updated ' + compactTime(data.updatedAt) : 'Blink ready | updated ' + compactTime(data.updatedAt));
-      return data;
-    }
-
-    async function maybeAutoReloadBlink(data) {
-      if (autoBlinkReloadAttempted || !(data.cameras || []).some(cameraNeedsBlinkReload)) return;
-      autoBlinkReloadAttempted = true;
-      await reloadBlink(false).catch(() => setText('cameraStatus', 'Blink reload failed'));
-      await refreshState();
-    }
-
     async function refreshState() {
       if (refreshInFlight) return;
       refreshInFlight = true;
@@ -4346,7 +4291,6 @@ ${blinkOpsMarkup()}
         const needsReload = cameras.some(cameraNeedsBlinkReload);
         setText('cameraStatus', needsReload ? 'Blink snapshots unavailable' : 'Alarm ' + data.alarm.state + ' | live proxy ' + data.liveProxy + ' | updated ' + compactTime(data.updatedAt));
         for (const camera of cameras) applyCamera(camera);
-        await maybeAutoReloadBlink(data);
       } catch (error) {
         setText('cameraStatus', 'reconnecting');
       } finally {
@@ -4395,14 +4339,6 @@ ${blinkOpsMarkup()}
       window.location.href = (window.IB || '') + '/mic-test';
       event.preventDefault();
     });
-
-    const headerReloadButton = document.getElementById('blinkReloadButton');
-    if (headerReloadButton) {
-      headerReloadButton.addEventListener('pointerup', event => {
-        reloadBlink(true).then(refreshState).catch(() => setText('cameraStatus', 'Blink reload failed'));
-        event.preventDefault();
-      });
-    }
 
 ${blinkOpsScript()}
 
@@ -7069,13 +7005,6 @@ const server = http.createServer(async (req, res) => {
         }
         return;
       }
-    }
-
-    if (req.method === 'POST' && url.pathname === '/cameras/reload-blink') {
-      const payload = await readJson(req).catch(() => ({}));
-      const state = await reloadBlinkIntegration({ force: Boolean(payload.force) });
-      sendJson(res, 200, state);
-      return;
     }
 
     if (req.method === 'GET' && (
