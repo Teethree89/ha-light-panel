@@ -44,6 +44,9 @@ import uuid
 ENV_FILE = os.environ.get("PANEL_ENV_FILE", "/etc/ha-light-panel.env")
 STATUS_DIR = os.environ.get("BLINK_REAUTH_STATUS_DIR", "/run/blink-reauth")
 STATUS_FILE = os.path.join(STATUS_DIR, "status.json")
+# Present while a re-auth runs if the entry was loaded when it started, so a
+# failed or cancelled attempt knows it may put the entry back as it was.
+RESUME_FILE = os.path.join(STATUS_DIR, "resume-entry")
 SPOOL_FILE = os.environ.get("BLINK_REAUTH_SPOOL", "/var/spool/blink-reauth/request.json")
 HA_CONFIG_DIR = os.environ.get("HA_CONFIG_DIR", "/opt/homeassistant")
 ENTRIES_FILE = os.path.join(HA_CONFIG_DIR, ".storage", "core.config_entries")
@@ -413,7 +416,20 @@ def tokens_look_valid():
     return True
 
 
-def enable_entry_if_safe():
+def remember_entry_health():
+    """Note whether the entry was working when this re-auth started."""
+    try:
+        healthy = blink_entry_state() == "loaded"
+    except Exception:
+        healthy = False
+    os.makedirs(STATUS_DIR, mode=0o755, exist_ok=True)
+    if healthy:
+        open(RESUME_FILE, "w").close()
+    elif os.path.exists(RESUME_FILE):
+        os.remove(RESUME_FILE)
+
+
+def enable_entry_if_safe(fresh_tokens=False):
     """Re-enable the blink entry, but only once credentials are real.
 
     Enabling an entry with junk tokens is not merely useless: blinkpy retries
@@ -422,11 +438,22 @@ def enable_entry_if_safe():
     used to re-enable unconditionally, which turned a mistimed cancel into an
     SMS flood (observed 2026-08-19). So leave it disabled unless the tokens
     are real - a disabled entry is quiet, and re-auth works while disabled.
+
+    Tokens that merely look real are not enough after a failed or cancelled
+    re-auth: dead tokens have the same shape. On 2026-09-18 a rate-limited
+    start re-enabled an entry whose refresh token had died, and HA went
+    straight back to signing in. So without fresh tokens, only restore an
+    entry that was loaded when the re-auth began.
     """
     if not tokens_look_valid():
         return {"ok": True, "enabled": False,
                 "reason": "tokens missing or invalid; entry left disabled to avoid a 2FA SMS retry loop"}
+    if not fresh_tokens and not os.path.exists(RESUME_FILE):
+        return {"ok": True, "enabled": False,
+                "reason": "entry was not working before this re-auth; left disabled until one succeeds"}
     result = set_entry_disabled(False)
+    if result.get("ok") and os.path.exists(RESUME_FILE):
+        os.remove(RESUME_FILE)
     return {**result, "enabled": bool(result.get("ok"))}
 
 
@@ -435,6 +462,7 @@ def cmd_start():
         print(json.dumps({"ok": False, "error": "re-auth already in progress"}))
         return
     set_status("starting")
+    remember_entry_health()
     creds = load_credentials()
     if not creds:
         error = "no Blink credentials; put {\"username\": ..., \"password\": ...} in " + CREDENTIALS_FILE
@@ -492,7 +520,7 @@ def cmd_verify(code):
         return
 
     set_status("enabling")
-    enable_entry_if_safe()
+    enable_entry_if_safe(fresh_tokens=True)
     deadline = time.time() + 120
     while time.time() < deadline:
         try:
