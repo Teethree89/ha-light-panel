@@ -1,6 +1,7 @@
 {
   "domain": "ha_light_panel",
   "name": "HA Light Panel",
+  "after_dependencies": ["hassio"],
   "codeowners": ["@Teethree89"],
   "config_flow": true,
   "dependencies": ["frontend", "http", "panel_custom"],
