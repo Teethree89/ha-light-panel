@@ -21,3 +21,7 @@ jobs:
         run: node scripts/sync-addon.js --check
       - name: Verify the add-on repository structure
         run: node scripts/validate-addon-repo.js
+      - name: Check the Blink proxy auto-restart rules
+        run: node scripts/check-proxy-auto-restart.js
+      - name: Check pages stay under the ingress prefix
+        run: node scripts/check-ingress-urls.js
