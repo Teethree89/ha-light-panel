@@ -546,7 +546,7 @@ whose modal shows proxy health and offers a proxy restart.
 | Key | Effect when set |
 |---|---|
 | `proxyStatusUrl` | Enables the whole feature. Without it none of the UI or the `/cameras/blink-*` routes exist. |
-| `proxyRestartSpool` | Enables **Restart Proxy** and the automatic restart when the proxy looks stale on page open. |
+| `proxyRestartSpool` | Enables **Restart Proxy** and the automatic restart. The automatic restart acts only when two checks 12 seconds apart both find the proxy stale (unreachable, not ready, or its token expired), and at most once per 5 minutes. It leaves a proxy alone during its first 90 seconds, while a Blink sign-in is in progress (`authenticating`, `waiting_for_pin`), and when it is deliberately signed out (`idle`, for example after **Reset all Blink authentication**). **Restart Proxy** always restarts immediately. |
 
 The restart spool exists because the panel service is hardened
 (`NoNewPrivileges`, `ProtectSystem=strict`) and cannot restart the proxy

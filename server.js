@@ -1790,9 +1790,17 @@ async function restartBlinkProxyAndWait(timeoutMs) {
 // Whether the live view proxy is stale enough that reopening the Cameras page
 // should trigger an automatic restart, independent of the dot-color health
 // check the token modal uses (that one also flags a maxed-out watchdog attempt
-// count, which an auto-restart here would just add to).
+// count, which an auto-restart here would just add to). A proxy that is
+// starting up, signing in or deliberately signed out is not stale: a restart
+// cannot help any of them, and one destroys an in-flight 2FA challenge.
+// An unknown auth_state or a missing field (older proxy) counts as before.
+// The Cameras page mirrors this in proxyLooksStaleForRestart(); keep them in step.
 function proxyNeedsAutoRestart(proxy) {
-  if (!proxy.ok || proxy.ready === false) return true;
+  if (!proxy.ok) return true;
+  if (proxy.auth_state === 'authenticating' || proxy.auth_state === 'waiting_for_pin') return false;
+  const uptime = proxy.process_uptime_seconds;
+  if (Number.isFinite(uptime) && uptime >= 0 && uptime < PROXY_STARTUP_GRACE_SECONDS) return false;
+  if (proxy.ready === false) return proxy.auth_state !== 'idle';
   if (Number.isFinite(proxy.token_seconds_remaining) && proxy.token_seconds_remaining <= 0) return true;
   return false;
 }
@@ -1800,9 +1808,27 @@ function proxyNeedsAutoRestart(proxy) {
 // Cooldown-gated, separate from the manual "Restart Proxy" button, which
 // always runs immediately.
 const AUTO_PROXY_RESTART_COOLDOWN_MS = 5 * 60 * 1000;
+// A stale verdict must still hold this long after the first look before the
+// proxy is restarted, so one bad sample never acts on its own.
+const AUTO_PROXY_RESTART_RECHECK_MS = 12000;
+// A restarted proxy reports ready:false until its startup login finishes.
+// The Cameras page script interpolates this constant rather than copying it.
+const PROXY_STARTUP_GRACE_SECONDS = 90;
 let lastAutoProxyRestartAt = 0;
+let autoProxyRestartInFlight = null;
 
-async function autoRestartBlinkProxyIfStale() {
+// Several pages (the frame, a phone) can ask at once. They share one run, so
+// exactly one of them waits and re-checks and all of them get its result.
+function autoRestartBlinkProxyIfStale() {
+  if (!autoProxyRestartInFlight) {
+    autoProxyRestartInFlight = runAutoRestartIfStale().finally(() => {
+      autoProxyRestartInFlight = null;
+    });
+  }
+  return autoProxyRestartInFlight;
+}
+
+async function runAutoRestartIfStale() {
   const proxy = await blinkProxyStatus();
   if (!proxyNeedsAutoRestart(proxy)) {
     return { stale: false, restarted: false };
@@ -1814,7 +1840,13 @@ async function autoRestartBlinkProxyIfStale() {
     return { stale: true, restarted: false, skipped: true, reason: 'cooldown', cooldownRemainingMs };
   }
 
-  lastAutoProxyRestartAt = now;
+  await new Promise(resolve => setTimeout(resolve, AUTO_PROXY_RESTART_RECHECK_MS));
+  if (!proxyNeedsAutoRestart(await blinkProxyStatus())) {
+    // Not stamped: a real fault soon after this must still be acted on.
+    return { stale: false, restarted: false, recovered: true };
+  }
+
+  lastAutoProxyRestartAt = Date.now();
   const result = await restartBlinkProxyAndWait(30000);
   return { stale: true, restarted: true, ...result };
 }
@@ -3595,13 +3627,27 @@ function blinkOpsScript() {
       proxyRefreshOverlay.classList.add('hidden');
     }
 
-    // Runs once per page load: if the proxy already looks stale on the first
-    // status fetch, ask the server to restart it (cooldown-gated there) and
-    // show a spinner overlay until that finishes, instead of leaving the
-    // family staring at broken snapshots until someone opens Blink Status
-    // and taps Restart Proxy by hand.
+    // Mirrors proxyNeedsAutoRestart() on the server, minus its re-check wait,
+    // so the page only asks for a restart (and only shows the overlay) when the
+    // server would also call the proxy stale. proxyIsUnhealthy() keeps driving
+    // the dot; it flags a proxy that is starting up, signing in or signed out.
+    // The grace period is the server's PROXY_STARTUP_GRACE_SECONDS.
+    function proxyLooksStaleForRestart(proxy) {
+      if (!proxy.ok) return true;
+      if (proxy.auth_state === 'authenticating' || proxy.auth_state === 'waiting_for_pin') return false;
+      const uptime = proxy.process_uptime_seconds;
+      if (Number.isFinite(uptime) && uptime >= 0 && uptime < ${PROXY_STARTUP_GRACE_SECONDS}) return false;
+      if (proxy.ready === false) return proxy.auth_state !== 'idle';
+      return Number.isFinite(proxy.token_seconds_remaining) && proxy.token_seconds_remaining <= 0;
+    }
+
+    // Acts at most once per page load: if the proxy looks stale, ask the
+    // server to restart it (it re-checks and applies a cooldown) and show a
+    // spinner overlay until that finishes, which can take about 12 s for the
+    // re-check plus 30 s for the restart. Otherwise the family would stare at
+    // broken snapshots until someone opens Blink Status and taps Restart Proxy.
     async function checkAutoRestartProxy(proxy) {
-      if (proxyAutoRestartChecked || !proxyIsUnhealthy(proxy)) return;
+      if (proxyAutoRestartChecked || !proxyLooksStaleForRestart(proxy)) return;
       proxyAutoRestartChecked = true;
       showProxyRefreshOverlay('Camera connection looks stale — reconnecting…');
       let message = 'Reconnected.';
@@ -3609,6 +3655,9 @@ function blinkOpsScript() {
         const response = await fetch('/cameras/blink-proxy-auto-restart', { method: 'POST' });
         const result = await response.json();
         if (!result.stale) {
+          // Recovered on its own (or was never stale): nothing was restarted,
+          // so a real fault later on this page load can still be acted on.
+          proxyAutoRestartChecked = false;
           hideProxyRefreshOverlay();
           return;
         }
