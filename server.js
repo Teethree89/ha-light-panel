@@ -3569,6 +3569,7 @@ function blinkOpsScript() {
       const button = document.getElementById('restartProxyButton');
       if (button.disabled) return;
       button.disabled = true;
+      proxyManualRestartAt = Date.now();
       const original = button.textContent;
       button.textContent = 'Restarting...';
       try {
@@ -3617,6 +3618,10 @@ function blinkOpsScript() {
     const proxyRefreshOverlay = document.getElementById('proxyRefreshOverlay');
     const proxyRefreshMessage = document.getElementById('proxyRefreshMessage');
     let proxyAutoRestartChecked = false;
+    // Set when Restart Proxy is pressed on this page, so its own few seconds of
+    // downtime are not mistaken for a stale proxy while the restart runs.
+    let proxyManualRestartAt = 0;
+    const PROXY_MANUAL_RESTART_QUIET_MS = 45000;
 
     function showProxyRefreshOverlay(message) {
       proxyRefreshMessage.textContent = message;
@@ -3648,6 +3653,9 @@ function blinkOpsScript() {
     // broken snapshots until someone opens Blink Status and taps Restart Proxy.
     async function checkAutoRestartProxy(proxy) {
       if (proxyAutoRestartChecked || !proxyLooksStaleForRestart(proxy)) return;
+      // Still stale after the quiet period means the manual restart did not
+      // help, and a later poll acts on it; nothing is spent by waiting.
+      if (Date.now() - proxyManualRestartAt < PROXY_MANUAL_RESTART_QUIET_MS) return;
       proxyAutoRestartChecked = true;
       showProxyRefreshOverlay('Camera connection looks stale — reconnecting…');
       let message = 'Reconnected.';
