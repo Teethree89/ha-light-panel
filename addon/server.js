@@ -4070,7 +4070,9 @@ function liveHtml(slug, ib = '') {
   const camera = cameraConfig(slug);
   if (!camera) return null;
   const token = String(attr(camera.liveEntity, 'access_token', ''));
-  const snapshotUrl = `/camera/${camera.slug}/snapshot.jpg`;
+  // <img src> is not rewritten by the ingress shim (only fetch/XHR are), so the
+  // prefix has to be in the markup or the backdrop 404s against HA's root.
+  const snapshotUrl = `${ib}/camera/${camera.slug}/snapshot.jpg`;
   return `<!doctype html>
 <html lang="en">
 <head>
