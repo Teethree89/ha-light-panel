@@ -49,13 +49,16 @@ function extractDecl(name) {
 
 const decls = ['AUTO_PROXY_RESTART_COOLDOWN_MS', 'AUTO_PROXY_RESTART_RECHECK_MS', 'PROXY_STARTUP_GRACE_SECONDS',
   'lastAutoProxyRestartAt', 'autoProxyRestartInFlight',
-  'proxyAutoRestartChecked', 'proxyManualRestartAt', 'PROXY_MANUAL_RESTART_QUIET_MS'].map(extractDecl);
+  'proxyAutoRestartChecked', 'proxyManualRestartAt', 'PROXY_MANUAL_RESTART_QUIET_MS',
+  'proxyAutoRestartRetryAt', 'PROXY_AUTO_RESTART_RETRY_MS', 'PROXY_OVERLAY_DELAY_MS'].map(extractDecl);
 const graceValue = Number(/PROXY_STARTUP_GRACE_SECONDS = (\d+)/.exec(decls[2])[1]);
+const recheckValue = Number(/AUTO_PROXY_RESTART_RECHECK_MS = (\d+)/.exec(decls[1])[1]);
 const functions = ['proxyNeedsAutoRestart', 'autoRestartBlinkProxyIfStale', 'runAutoRestartIfStale',
   'proxyLooksStaleForRestart', 'checkAutoRestartProxy', 'proxyIsUnhealthy'].map(extractFunction);
-// The client predicate interpolates the server constant; resolve it as the template would.
-const code = decls.join('\n') + '\n' +
-  functions.join('\n').replace('${PROXY_STARTUP_GRACE_SECONDS}', String(graceValue));
+// The page script interpolates server constants; resolve them as the template would.
+const code = (decls.join('\n') + '\n' + functions.join('\n'))
+  .replace('${PROXY_STARTUP_GRACE_SECONDS}', String(graceValue))
+  .replace('${AUTO_PROXY_RESTART_RECHECK_MS}', String(recheckValue));
 if (/\$\{/.test(code)) throw new Error('unresolved interpolation left in extracted code');
 
 // ---- harness --------------------------------------------------------------
@@ -65,7 +68,7 @@ function makeEnv(statusAt, opts = {}) {
   let now = T0;
   let seq = 0;
   let timers = [];
-  const env = { restarts: [], posts: 0, overlayShown: 0, overlayVisible: false, statusCalls: 0, results: [] };
+  const env = { restarts: [], posts: 0, overlayShown: 0, overlayAt: [], overlayMessages: [], overlayVisible: false, statusCalls: 0, results: [] };
   const tSec = () => (now - T0) / 1000;
 
   const fakeSetTimeout = (fn, ms) => { const id = ++seq; timers.push({ id, at: now + (ms || 0), fn }); return id; };
@@ -80,7 +83,10 @@ function makeEnv(statusAt, opts = {}) {
     clearTimeout: fakeClearTimeout,
     console,
     proxyRefreshMessage: { textContent: '' },
-    showProxyRefreshOverlay(message) { env.overlayShown++; env.overlayVisible = true; sandbox.proxyRefreshMessage.textContent = message; },
+    showProxyRefreshOverlay(message) {
+      env.overlayShown++; env.overlayAt.push(tSec()); env.overlayMessages.push(message); env.overlayVisible = true;
+      sandbox.proxyRefreshMessage.textContent = message;
+    },
     hideProxyRefreshOverlay() { env.overlayVisible = false; },
     async loadTokenStatus() {},
     async blinkProxyStatus() {
@@ -423,6 +429,40 @@ function record(id, label, expected, actual, extra = '') {
     const early = await settlesAtOnce(st, sp2);
     await st.advanceTo(60); await sp2;
     record('E5', 'a stale first look (no cooldown) does NOT return before the re-check', false, early);
+  }
+
+  // The overlay swallows every tap, so it must not appear for a blip and must not repeat.
+  {
+    const e = makeEnv(s1);
+    await e.runPage(1, 60);
+    record('O1', 'a blip that recovers on its own never shows the overlay', 0, e.overlayShown);
+  }
+  {
+    const e = makeEnv(s3);
+    await e.runPage(15, 120);
+    record('O2', 'a stuck proxy shows the overlay only after the 12 s re-check (13.5 s), not at once',
+      [true, true], [e.overlayAt[0] >= 13.5, e.overlayAt[0] < 20], `shownAt=${e.overlayAt.map(t => t.toFixed(1))}`);
+    record('O2', 'and the result message is shown once the restart finishes', true,
+      e.overlayMessages[e.overlayMessages.length - 1] === 'Reconnected.', `messages=${JSON.stringify(e.overlayMessages)}`);
+  }
+  {
+    // A proxy that is stale for a few seconds out of every 30 and healthy by the re-check.
+    const flapping = t => (t % 30) < 5 ? DOWN : H({ process_uptime_seconds: 5000 + t });
+    const e = makeEnv(flapping);
+    await e.runPage(15, 600);
+    record('O3', 'a flapping proxy: no restart, no overlay, and POSTs paced by the retry pause',
+      [0, 0, true], [e.restarts.length, e.overlayShown, e.posts <= 11], `posts=${e.posts} (60 s pause, 600 s run)`);
+  }
+  {
+    // Cooldown already used: the page's request is answered at once, and the message must still appear.
+    const e = makeEnv(s3);
+    const warm = e.ctx.autoRestartBlinkProxyIfStale();
+    await e.advanceTo(30); await warm;
+    await e.advanceTo(40);
+    e.ctx.checkAutoRestartProxy(s3(40));
+    await e.advanceTo(60);
+    record('O4', 'an immediate cooldown answer still shows its message', [1, true],
+      [e.overlayShown, /already tried/.test(e.overlayMessages[0] || '')], `messages=${JSON.stringify(e.overlayMessages)}`);
   }
 
   // Client / server predicate parity over a grid of inputs.

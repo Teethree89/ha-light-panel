@@ -68,7 +68,9 @@ async function main() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ha-light-panel-ingress-'));
   const configPath = path.join(dir, 'config.json');
   fs.writeFileSync(configPath, JSON.stringify({
-    cameras: [{ slug: SLUG, label: 'Front', sourceEntity: `camera.${SLUG}`, liveEntity: `camera.${SLUG}_live` }]
+    cameras: [{ slug: SLUG, label: 'Front', sourceEntity: `camera.${SLUG}`, liveEntity: `camera.${SLUG}_live` }],
+    // Enables the Blink Status UI so its markup and overlay are part of the check.
+    blinkOps: { proxyStatusUrl: `http://127.0.0.1:${haPort}/status` }
   }));
   const port = await freePort();
   let output = '';
@@ -135,6 +137,11 @@ async function main() {
       live.includes(`<img class="snapshot" src="${wanted}"`));
     check('camera cards use the prefixed snapshot URL',
       (bodies['/cameras'] || '').includes(`href="${wanted}"`));
+
+    // The reconnecting overlay is a full-screen layer. If it ever intercepts taps, a stale proxy
+    // leaves every camera button dead until it clears, so it must let them through.
+    check('the proxy reconnect overlay does not intercept taps',
+      /<div id="proxyRefreshOverlay"[^>]*style="[^"]*pointer-events:\s*none/.test(bodies['/cameras'] || ''));
 
     // Without the header nothing is prefixed (plain LAN or Docker use).
     const plain = await get(`/live/${SLUG}`);

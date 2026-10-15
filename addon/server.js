@@ -3554,7 +3554,9 @@ function blinkOpsMarkup() {
     </div>
   </div>
 
-  <div id="proxyRefreshOverlay" class="modal-backdrop hidden" role="status" aria-live="polite">
+  <!-- Informational only: pointer-events:none lets taps through, so a stale
+       proxy can never leave the camera buttons dead under a full-screen layer. -->
+  <div id="proxyRefreshOverlay" class="modal-backdrop hidden" role="status" aria-live="polite" style="pointer-events:none">
     <div class="modal" style="text-align:center">
       <div class="spinner" aria-hidden="true"></div>
       <div id="proxyRefreshMessage" class="modal-body" style="margin:16px 0 0">Camera connection looks stale &mdash; reconnecting&hellip;</div>
@@ -3622,6 +3624,14 @@ function blinkOpsScript() {
     // downtime are not mistaken for a stale proxy while the restart runs.
     let proxyManualRestartAt = 0;
     const PROXY_MANUAL_RESTART_QUIET_MS = 45000;
+    // The server holds its answer for the re-check before it restarts anything,
+    // so the full-screen overlay (which swallows every tap) waits for just
+    // longer than that. A blip that clears by itself never shows it.
+    const PROXY_OVERLAY_DELAY_MS = ${AUTO_PROXY_RESTART_RECHECK_MS} + 1500;
+    // After a "recovered" answer, do not ask again for this long, so a proxy
+    // that keeps blipping cannot make the page POST on every poll.
+    let proxyAutoRestartRetryAt = 0;
+    const PROXY_AUTO_RESTART_RETRY_MS = 60000;
 
     function showProxyRefreshOverlay(message) {
       proxyRefreshMessage.textContent = message;
@@ -3647,25 +3657,31 @@ function blinkOpsScript() {
     }
 
     // Acts at most once per page load: if the proxy looks stale, ask the
-    // server to restart it (it re-checks and applies a cooldown) and show a
-    // spinner overlay until that finishes, which can take about 12 s for the
-    // re-check plus 30 s for the restart. Otherwise the family would stare at
-    // broken snapshots until someone opens Blink Status and taps Restart Proxy.
+    // server to restart it (it re-checks and applies a cooldown). If that
+    // turns into a real restart, a spinner overlay covers the page until it
+    // finishes, up to the 30 s restart wait. Otherwise the family would stare
+    // at broken snapshots until someone opens Blink Status and taps Restart
+    // Proxy.
     async function checkAutoRestartProxy(proxy) {
       if (proxyAutoRestartChecked || !proxyLooksStaleForRestart(proxy)) return;
       // Still stale after the quiet period means the manual restart did not
       // help, and a later poll acts on it; nothing is spent by waiting.
       if (Date.now() - proxyManualRestartAt < PROXY_MANUAL_RESTART_QUIET_MS) return;
+      if (Date.now() < proxyAutoRestartRetryAt) return;
       proxyAutoRestartChecked = true;
-      showProxyRefreshOverlay('Camera connection looks stale — reconnecting…');
+      const overlayTimer = setTimeout(() => {
+        showProxyRefreshOverlay('Camera connection looks stale — reconnecting…');
+      }, PROXY_OVERLAY_DELAY_MS);
       let message = 'Reconnected.';
       try {
         const response = await fetch('/cameras/blink-proxy-auto-restart', { method: 'POST' });
         const result = await response.json();
         if (!result.stale) {
+          clearTimeout(overlayTimer);
           // Recovered on its own (or was never stale): nothing was restarted,
           // so a real fault later on this page load can still be acted on.
           proxyAutoRestartChecked = false;
+          proxyAutoRestartRetryAt = Date.now() + PROXY_AUTO_RESTART_RETRY_MS;
           hideProxyRefreshOverlay();
           return;
         }
@@ -3677,14 +3693,11 @@ function blinkOpsScript() {
       } catch (error) {
         message = 'Could not reach the panel service to reconnect.';
       }
-      proxyRefreshMessage.textContent = message;
+      clearTimeout(overlayTimer);
+      showProxyRefreshOverlay(message);
       await loadTokenStatus();
       setTimeout(hideProxyRefreshOverlay, 2500);
     }
-
-    proxyRefreshOverlay.addEventListener('pointerup', event => {
-      if (event.target === proxyRefreshOverlay) hideProxyRefreshOverlay();
-    });
 
     function renderTokenStatus(data) {
       const proxy = data.proxy || {};
