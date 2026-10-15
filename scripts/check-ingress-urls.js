@@ -1,7 +1,9 @@
 #!/usr/bin/env node
-// Checks that the pages stay under the ingress prefix when served through the
-// ha_light_panel integration (X-Ingress-Path: /api/ha_light_panel) or add-on
-// ingress, and that snapshots come from where Home Assistant actually keeps them.
+// Smoke test of the served panel. Checks that the pages stay under the ingress
+// prefix when served through the ha_light_panel integration (X-Ingress-Path:
+// /api/ha_light_panel) or add-on ingress, that snapshots come from where Home
+// Assistant actually keeps them, and that none of the pages or state endpoints
+// fail server-side (a 5xx makes /health report the panel as down).
 //
 // The ingress shim in server.js only rewrites fetch() and XHR. Anything the
 // browser loads straight from markup (<img src>, <a href>, <script src>) must
@@ -142,6 +144,30 @@ async function main() {
     // leaves every camera button dead until it clears, so it must let them through.
     check('the proxy reconnect overlay does not intercept taps',
       /<div id="proxyRefreshOverlay"[^>]*style="[^"]*pointer-events:\s*none/.test(bodies['/cameras'] || ''));
+
+    // The state endpoints behind every page. A thrown ReferenceError here once turned
+    // /cameras/state into a 500 on every call, which left the Cameras page stuck on
+    // "reconnecting" and made /health report the panel as down while HA was fine.
+    const cameraState = await get('/cameras/state', ingress);
+    let cameraJson = {};
+    try { cameraJson = JSON.parse(cameraState.body); } catch (error) { /* reported below */ }
+    check('GET /cameras/state succeeds', cameraState.status === 200 && cameraJson.ok === true,
+      `HTTP ${cameraState.status} ${cameraState.body.slice(0, 160)}`);
+    check('/cameras/state lists the configured camera',
+      Array.isArray(cameraJson.cameras) && cameraJson.cameras.length === 1);
+    const panelState = await get('/state', ingress);
+    check('GET /state succeeds', panelState.status === 200, `HTTP ${panelState.status}`);
+    let panelJson = {};
+    try { panelJson = JSON.parse(panelState.body); } catch (error) { /* reported below */ }
+    check('/state reports ok', panelJson.ok === true, panelState.body.slice(0, 160));
+    const blink = await get('/cameras/blink-token-status', ingress);
+    check('GET /cameras/blink-token-status succeeds', blink.status === 200, `HTTP ${blink.status}`);
+    // Anything above that threw a server-side error would have been recorded here.
+    const health = await get('/health');
+    let healthJson = {};
+    try { healthJson = JSON.parse(health.body); } catch (error) { /* reported below */ }
+    check('/health is ok after exercising every page and state endpoint',
+      health.status === 200 && healthJson.ok === true, `HTTP ${health.status} ${healthJson.lastError || ''}`);
 
     // Without the header nothing is prefixed (plain LAN or Docker use).
     const plain = await get(`/live/${SLUG}`);

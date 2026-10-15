@@ -1119,7 +1119,6 @@ function camerasState() {
       state: CAMERA_PANEL.alarmEntity ? state(CAMERA_PANEL.alarmEntity, 'unknown') : 'unknown'
     },
     liveProxy: CAMERA_PANEL.liveProxyEntity ? state(CAMERA_PANEL.liveProxyEntity, 'unknown') : 'unknown',
-    lastBlinkReloadAt: lastBlinkReloadAt ? new Date(lastBlinkReloadAt).toISOString() : '',
     snapshotIssue: cameras.some(cameraNeedsBlinkReload),
     cameras
   };
