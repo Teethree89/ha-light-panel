@@ -1418,7 +1418,7 @@ function dashboardState() {
       entityId: CAMERA_PANEL.alarmEntity || '',
       state: CAMERA_PANEL.alarmEntity ? state(CAMERA_PANEL.alarmEntity, 'unknown') : 'unknown'
     },
-    balance: balanceAvailability(),
+    balance: { ...balanceAvailability(), companion: companionState() },
     alarmPanel: alarmPanelSummary(),
     rooms,
     sock: status,
@@ -1521,6 +1521,82 @@ function balanceAvailability() {
     focusZone,
     manualOverride
   };
+}
+
+// An optional companion button that shares the Balance Rooms slot. While its
+// visibleWhen entity matches, Balance shrinks to half width and the companion
+// takes the other half; otherwise Balance keeps the whole slot. It is generic:
+// one configured service, an optional visibility rule, and an optional status
+// entity (a state plus a human-readable reason attribute) that decides whether
+// a tap is allowed and what the button says. It never carries a service the
+// browser could substitute: the server resolves it, as for every other action.
+function balanceCompanionConfig() {
+  const source = PANEL.balance?.companion;
+  if (!isPlainObject(source)) return null;
+  const action = isPlainObject(source.action) ? source.action : {};
+  if (!action.service) return null;
+  const list = value => (Array.isArray(value) ? value : (value === undefined || value === null || value === '' ? [] : [value])).map(String);
+  const label = String(source.label || 'Action').slice(0, 24);
+  const when = isPlainObject(source.visibleWhen) ? source.visibleWhen : {};
+  return {
+    label,
+    color: layoutColor(source.color, '#d97706'),
+    activeColor: layoutColor(source.activeColor, '#ea580c'),
+    visibleWhen: { entity: String(when.entity || ''), state: list(when.state), notState: list(when.notState) },
+    statusEntity: String(source.statusEntity || ''),
+    readyStates: list(source.readyStates).length ? list(source.readyStates) : ['ready'],
+    activeStates: list(source.activeStates).length ? list(source.activeStates) : ['running', 'on', 'active'],
+    reasonAttribute: String(source.reasonAttribute || 'reason'),
+    remainingAttribute: String(source.remainingAttribute || 'minutes_left'),
+    action: {
+      service: String(action.service),
+      data: isPlainObject(action.data) ? action.data : {},
+      confirm: modalSettings(action.confirm, { title: `${label}?`, body: '', confirmLabel: 'Run' }),
+      success: modalSettings(action.success, { title: label, body: 'Home Assistant accepted the action.' }),
+      failure: modalSettings(action.failure, { enabled: true, title: `${label} unavailable`, body: '' })
+    }
+  };
+}
+
+// Hidden unless the visibility entity is in a listed state, so an unknown or
+// unavailable entity fails closed. No rule at all means always visible.
+function companionVisible(config) {
+  const when = config.visibleWhen;
+  if (!when.entity || (!when.state.length && !when.notState.length)) return true;
+  const current = String(state(when.entity, 'unknown'));
+  if (!isValidState(current)) return false;
+  if (when.state.length && !when.state.includes(current)) return false;
+  if (when.notState.length && when.notState.includes(current)) return false;
+  return true;
+}
+
+function companionState() {
+  const config = balanceCompanionConfig();
+  if (!config) return { configured: false, visible: false };
+  const status = config.statusEntity ? String(state(config.statusEntity, 'unknown')) : '';
+  const active = Boolean(status) && config.activeStates.includes(status);
+  // Tapping a running action stops it, so "active" is always actionable.
+  const canAct = !config.statusEntity || config.readyStates.includes(status) || active;
+  const reason = config.statusEntity ? String(attr(config.statusEntity, config.reasonAttribute, '') || '') : '';
+  return {
+    configured: true,
+    visible: companionVisible(config),
+    label: config.label,
+    color: config.color,
+    activeColor: config.activeColor,
+    status,
+    active,
+    canAct,
+    reason: reason || (canAct ? '' : `Not available right now (${status || 'unknown'}).`),
+    minutesLeft: config.statusEntity ? numberAttr(config.statusEntity, config.remainingAttribute, null) : null
+  };
+}
+
+// What the page script needs: wording and modal policy, never the service.
+function companionClientConfig() {
+  const config = balanceCompanionConfig();
+  if (!config) return null;
+  return { label: config.label, confirm: config.action.confirm, success: config.action.success, failure: config.action.failure };
 }
 
 function modalSettings(value, fallback = {}) {
@@ -1697,6 +1773,28 @@ async function callAction(name, options = {}) {
     }
     if (!action.service) throw new Error('No Balance Rooms action is configured.');
     await callConfiguredService(action);
+    return;
+  }
+
+  if (name === 'balanceCompanion') {
+    const config = balanceCompanionConfig();
+    if (!config) throw new Error('No Balance companion action is configured.');
+    await pollStates(true);
+    const companion = companionState();
+    if (typeof options.expectedActive === 'boolean' && options.expectedActive !== companion.active) {
+      const error = new Error('The action status changed. Check the button and tap again.');
+      error.statusCode = 409;
+      throw error;
+    }
+    // Enforced here as well as in the browser, like the Balance readiness
+    // guard: a hidden or unavailable button cannot be triggered by a crafted
+    // request. The /action route refreshes state afterwards.
+    if (!companion.visible || !companion.canAct) {
+      const error = new Error(companion.visible ? companion.reason : `${config.label} is not available right now.`);
+      error.statusCode = 409;
+      throw error;
+    }
+    await callConfiguredService(config.action);
     return;
   }
 
@@ -2485,19 +2583,34 @@ function clientHtml(ib = '') {
         <text id="roomExtra5" x="20" y="178" class="tiny">--</text>
       </g>
 
-      <g id="btnBalance" class="button" data-action="assist" transform="translate(24 532)">
-        <rect id="balanceBg" class="pending-dim" width="226" height="70" rx="8" fill="#4f46e5"/>
-        <g transform="translate(20 27)">
-          <path d="M2 23 C13 23 15 7 27 7" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round"/>
-          <path d="M2 10 C11 10 14 15 22 15" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round"/>
-          <path d="M23 3 L30 7 L23 12" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
-          <path d="M17 11 L24 15 L17 20" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+      <g id="btnBalance" transform="translate(24 532)">
+        <g id="balancePrimary" class="button" data-action="assist" role="button" tabindex="0" aria-label="Balance Rooms">
+          <rect id="balanceBg" class="pending-dim" width="226" height="70" rx="8" fill="#4f46e5"/>
+          <g id="balanceIcon" transform="translate(20 27)">
+            <path d="M2 23 C13 23 15 7 27 7" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round"/>
+            <path d="M2 10 C11 10 14 15 22 15" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round"/>
+            <path d="M23 3 L30 7 L23 12" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M17 11 L24 15 L17 20" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+          </g>
+          <text id="btnBalanceText" x="130" y="47" text-anchor="middle" fill="#fff" font-size="18" font-weight="850">Balance Rooms</text>
+          <text id="btnBalanceText2" x="54.5" y="49" text-anchor="middle" fill="#fff" font-size="18" font-weight="850" style="display:none"></text>
+          <g id="balanceSpinner" class="action-spinner" data-spinner="assist" transform="translate(216 40)">
+            <circle r="9" fill="none" stroke="rgba(255,255,255,0.86)" stroke-width="3" stroke-linecap="round" stroke-dasharray="15 42">
+              <animateTransform attributeName="transform" type="rotate" from="0" to="360" dur="0.8s" repeatCount="indefinite"/>
+            </circle>
+          </g>
         </g>
-        <text id="btnBalanceText" x="130" y="47" text-anchor="middle" fill="#fff" font-size="18" font-weight="850">Balance Rooms</text>
-        <g class="action-spinner" data-spinner="assist" transform="translate(216 40)">
-          <circle r="9" fill="none" stroke="rgba(255,255,255,0.86)" stroke-width="3" stroke-linecap="round" stroke-dasharray="15 42">
-            <animateTransform attributeName="transform" type="rotate" from="0" to="360" dur="0.8s" repeatCount="indefinite"/>
-          </circle>
+
+        <g id="btnBalanceCompanion" class="button" data-action="balanceCompanion" role="button" tabindex="0" style="display:none">
+          <title id="companionTitle"></title>
+          <rect id="companionBg" class="pending-dim" width="109" height="70" rx="8" fill="#d97706"/>
+          <text id="companionText" x="54.5" y="28" text-anchor="middle" fill="#fff" font-size="18" font-weight="850"></text>
+          <text id="companionText2" x="54.5" y="49" text-anchor="middle" fill="#fff" font-size="18" font-weight="850"></text>
+          <g id="companionSpinner" class="action-spinner" transform="translate(97 58)">
+            <circle r="6" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-dasharray="10 28">
+              <animateTransform attributeName="transform" type="rotate" from="0" to="360" dur="0.8s" repeatCount="indefinite"/>
+            </circle>
+          </g>
         </g>
       </g>
 
@@ -2687,6 +2800,8 @@ ${layoutCardMarkup()}
     const layoutActionCards = layoutCardsConfig.filter(card => card.type === 'action' && card.action);
     const nativeLayoutConfig = ${jsValue(configuredNativeLayoutCards())};
     const balanceActionConfig = ${jsValue(balanceActionConfig())};
+    const companionConfig = ${jsValue(companionClientConfig())};
+    const pendingActions = new Set();
     const layoutResponsive = ${jsValue((PANEL.layout || {}).canvas?.responsive || 'auto')};
 
     // The editor stores native room-card styling by room id. It intentionally
@@ -2719,7 +2834,7 @@ ${layoutCardMarkup()}
       const titleTargets = {
         topCard0: 'hdrBlink', topCard1: 'hdrMode', topCard2: 'hdrComfort',
         topCard3: 'hdrOutside', topCard4: 'hdrHaBox', roomsPanel: 'roomsTitleLabel',
-        btnBalance: 'btnBalanceText', controls: 'hdrFamily'
+        controls: 'hdrFamily'
       };
       nativeLayoutConfig.forEach(card => {
         const node = byId(card.id);
@@ -2809,6 +2924,52 @@ ${layoutCardMarkup()}
       document.querySelectorAll('[data-action="' + name + '"]').forEach(node => {
         node.classList.toggle('pending', pending);
       });
+    }
+
+    // Both buttons stay inside the builder's Balance region, so moving or
+    // scaling that region also moves/scales the companion. Portrait changes
+    // its internal width; the builder keeps the original 226px coordinate box.
+    function applyBalanceCompanion() {
+      const companion = appState.latest?.balance?.companion || {};
+      const visible = companion.visible === true;
+      const width = portraitMedia.matches ? 432 : 226;
+      const half = (width - 8) / 2;
+      const primaryWidth = visible ? half : width;
+      const primaryLabel = nativeLayoutConfig.find(card => card.id === 'btnBalance')?.title || 'Balance Rooms';
+      const lines = label => {
+        const words = String(label).trim().split(/\\s+/);
+        const middle = Math.ceil(words.length / 2);
+        return [words.slice(0, middle).join(' '), words.slice(middle).join(' ')];
+      };
+      setA(byId('balanceBg'), 'width', primaryWidth);
+      setA(byId('btnBalanceText'), 'x', visible ? half / 2 : (portraitMedia.matches ? 216 : 130));
+      setA(byId('btnBalanceText'), 'y', visible ? 28 : 47);
+      setText(byId('btnBalanceText'), visible ? lines(primaryLabel)[0] : primaryLabel);
+      setText(byId('btnBalanceText2'), lines(primaryLabel)[1]);
+      setA(byId('btnBalanceText2'), 'x', half / 2);
+      setVisible(byId('btnBalanceText2'), visible);
+      setVisible(byId('balanceIcon'), !visible);
+      setA(byId('balanceSpinner'), 'transform', 'translate(' + (primaryWidth - 12) + ' ' + (visible ? 58 : 40) + ')');
+      byId('balancePrimary').setAttribute('aria-label', primaryLabel);
+      setVisible(byId('btnBalanceCompanion'), visible);
+      if (!visible) return;
+      setA(byId('btnBalanceCompanion'), 'transform', 'translate(' + (half + 8) + ' 0)');
+      setA(byId('companionBg'), 'width', half);
+      setA(byId('companionText'), 'x', half / 2);
+      setA(byId('companionText2'), 'x', half / 2);
+      setA(byId('companionSpinner'), 'transform', 'translate(' + (half - 12) + ' 58)');
+      const label = companion.label || companionConfig?.label || 'Action';
+      const wording = companion.active
+        ? ['Stop', Number.isFinite(companion.minutesLeft) ? Math.max(0, companion.minutesLeft) + ' min left' : label]
+        : lines(label);
+      setText(byId('companionText'), wording[0]);
+      setText(byId('companionText2'), wording[1]);
+      setA(byId('companionText2'), 'font-size', companion.active ? 13 : 18);
+      byId('companionBg').setAttribute('fill', companion.active ? companion.activeColor : companion.color);
+      byId('companionBg').style.opacity = companion.canAct ? '1' : '0.45';
+      byId('btnBalanceCompanion').setAttribute('aria-label', (companion.active ? 'Stop ' : '') + label);
+      byId('btnBalanceCompanion').setAttribute('aria-disabled', String(!companion.canAct));
+      setText(byId('companionTitle'), companion.reason || label);
     }
 
     function setMoveBand(enabled) {
@@ -3057,6 +3218,7 @@ ${layoutCardMarkup()}
 
     function applyState(data) {
       appState.latest = data;
+      applyBalanceCompanion();
       const colors = modeColors[data.mode.type] || modeColors.hold;
       els.modeGradA.setAttribute('stop-color', colors[0]);
       els.modeGradB.setAttribute('stop-color', colors[1]);
@@ -3138,6 +3300,27 @@ ${layoutCardMarkup()}
         return;
       }
 
+      if (pendingActions.has(name === 'layoutCard' ? 'layout-' + options.id : name)) return;
+
+      if (name === 'balanceCompanion') {
+        const companion = appState.latest?.balance?.companion;
+        if (!companion?.visible || !companion.canAct || !appState.latest?.ok) {
+          showModal(companionConfig?.failure?.title || 'Action unavailable',
+            !appState.latest?.ok ? 'Home Assistant is unavailable. Try again once the panel reconnects.' : (!companion?.visible ? 'This action is unavailable right now.' : companion.reason));
+          return;
+        }
+        if (confirmed && typeof options.expectedActive === 'boolean' && options.expectedActive !== companion.active) {
+          showModal(companionConfig?.failure?.title || 'Action unavailable', 'The action status changed. Check the button and tap again.');
+          return;
+        }
+        if (!confirmed && !companion.active && companionConfig?.confirm?.enabled) {
+          const confirm = companionConfig.confirm;
+          showConfirmModal(confirm.title, confirm.body || companion.reason, confirm.confirmLabel, () => action(name, { ...options, expectedActive: companion.active }, true));
+          return;
+        }
+        options = { ...options, expectedActive: companion.active };
+      }
+
       if (name === 'assist' && balanceActionConfig.requireReady && appState.latest?.balance && !appState.latest.balance.canRun) {
         const balance = appState.latest.balance;
         const failure = balanceModalCopy('failure', { title: 'Balance Rooms unavailable', body: balance.reason + ' ' + balance.detail + '.' });
@@ -3164,6 +3347,7 @@ ${layoutCardMarkup()}
       }
 
       els.connection.textContent = 'sending';
+      pendingActions.add(name === 'layoutCard' ? 'layout-' + options.id : name);
       setPending(name === 'layoutCard' ? 'layout-' + options.id : name, true);
       try {
         const response = await fetch('/action', {
@@ -3174,6 +3358,9 @@ ${layoutCardMarkup()}
         const payload = await response.json().catch(() => ({}));
         if (!response.ok) throw new Error(payload.error || 'Action failed');
         await refresh();
+        if (name === 'balanceCompanion' && companionConfig?.success?.enabled) {
+          showModal(companionConfig.success.title, companionConfig.success.body);
+        }
         if (name === 'assist') {
           const success = balanceModalCopy('success', { title: 'Balance Rooms', body: 'The balance action was sent to Home Assistant.' });
           if (success.enabled) showModal(success.title, success.body);
@@ -3186,6 +3373,9 @@ ${layoutCardMarkup()}
         }
       } catch (error) {
         els.connection.textContent = 'action failed';
+        if (name === 'balanceCompanion' && companionConfig?.failure?.enabled) {
+          showModal(companionConfig.failure.title, error.message || companionConfig.failure.body);
+        }
         if (name === 'assist') {
           const failure = balanceModalCopy('failure', { title: 'Balance Rooms failed', body: error.message || 'Home Assistant could not run the balance action.' });
           if (failure.enabled) showModal(failure.title, failure.body);
@@ -3197,6 +3387,7 @@ ${layoutCardMarkup()}
           if (failure.enabled) showModal(failure.title, failure.body || error.message || 'Home Assistant could not run the action.');
         }
       } finally {
+        pendingActions.delete(name === 'layoutCard' ? 'layout-' + options.id : name);
         setPending(name === 'layoutCard' ? 'layout-' + options.id : name, false);
       }
     }
@@ -3216,6 +3407,15 @@ ${layoutCardMarkup()}
       node.addEventListener('pointerup', event => {
         setMoveBand(!appState.moveBand);
         event.preventDefault();
+      });
+    });
+
+    ['balancePrimary', 'btnBalanceCompanion'].forEach(id => {
+      byId(id).addEventListener('keydown', event => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          action(byId(id).dataset.action);
+        }
       });
     });
 
@@ -3342,6 +3542,7 @@ ${layoutCardMarkup()}
         applyConfiguredNativeLayout();
       }
       applyLayoutCardsGeometry(portrait);
+      applyBalanceCompanion();
     }
     if (portraitMedia.addEventListener) portraitMedia.addEventListener('change', applyLayout);
     else if (portraitMedia.addListener) portraitMedia.addListener(applyLayout);

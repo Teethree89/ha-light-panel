@@ -184,6 +184,45 @@ Generic Action buttons use the same modal controls, but save under their entry
 in `panel.layout.cards`. The panel resolves the card ID and configured service
 on the server, so a browser cannot substitute a different service or payload.
 
+### Winter companion button
+
+An optional `panel.balance.companion` splits the Balance Rooms slot into two
+buttons while a configured entity matches. For example:
+
+```json
+"companion": {
+  "label": "Warm Floors",
+  "visibleWhen": { "entity": "input_select.seasonal_mode", "state": "Winter" },
+  "statusEntity": "sensor.warm_floors_status",
+  "readyStates": ["ready"],
+  "activeStates": ["running"],
+  "action": {
+    "service": "script.warm_floors",
+    "confirm": { "enabled": true, "title": "Warm the floors?", "confirmLabel": "Start warming" }
+  }
+}
+```
+
+Place this under `panel.balance`. Omit it to keep the original full-width button.
+`visibleWhen.state` and `notState` accept a string or array; missing or unavailable
+visibility entities hide the companion. Without a visibility rule it is always
+shown. The split follows both portrait layout and the builder's Balance region.
+
+The status entity supplies a `reason` attribute for confirmations and refusals,
+and `minutes_left` for the running countdown (override those names with
+`reasonAttribute` and `remainingAttribute`). Ready states allow starting; active
+states show **Stop** and allow an immediate tap without the start confirmation.
+The configured service must toggle start/stop and enforce its own runtime and
+safety limits in Home Assistant. Other states keep the button dimmed and tapping
+shows the reason without calling a service. Missing status entities block taps.
+Omit `statusEntity` for an action that needs no readiness check. The server
+refreshes and checks availability before calling only the configured service.
+`action.confirm`, `success`, and `failure` use the same modal options as other
+actions. Optional `color` and `activeColor` use six-digit hex colours.
+
+The demo's Seasonal Mode setting can switch to Winter to try the split and the
+start/stop flow using simulated states.
+
 ## Docker
 
 For the full Docker/Compose install, configuration, restart, and update steps,

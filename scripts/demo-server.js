@@ -119,6 +119,11 @@ const STATES = [
     sensor(`sensor.${slug}_temperature`, 64)
   ]),
 
+  // Optional winter companion: its backend owns the furnace safety rules.
+  sensor('sensor.warm_floors_status', 'ready', {
+    reason: 'Runs the furnace for up to 20 minutes. Tap again to stop.', minutes_left: null
+  }),
+
   // Backs the optional /hvac-settings page.
   sensor('input_boolean.humidity_biased_cooling_enabled', 'on'),
   sensor('input_select.seasonal_mode', 'Summer', {
@@ -161,6 +166,20 @@ const ha = http.createServer((req, res) => {
     req.on('data', chunk => { body += chunk; });
     req.on('end', () => {
       console.log(`[fake-ha] service ${url.pathname.replace('/api/services/', '')} ${body || '{}'}`);
+      const data = JSON.parse(body || '{}');
+      if (url.pathname === '/api/services/input_select/select_option') {
+        const entity = STATES.find(item => item.entity_id === data.entity_id);
+        if (entity) entity.state = String(data.option);
+      }
+      if (url.pathname === '/api/services/script/warm_floors') {
+        const status = STATES.find(item => item.entity_id === 'sensor.warm_floors_status');
+        status.state = status.state === 'running' ? 'ready' : 'running';
+        status.attributes.minutes_left = status.state === 'running' ? 20 : null;
+        status.attributes.reason = status.state === 'running'
+          ? 'Warm floors is running (20 min left). Tap to stop.'
+          : 'Runs the furnace for up to 20 minutes. Tap again to stop.';
+      }
+
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end('[]');
     });

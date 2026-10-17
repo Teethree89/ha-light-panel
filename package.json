@@ -1,6 +1,6 @@
 {
   "name": "ha-light-panel",
-  "version": "0.9.2",
+  "version": "0.10.0",
   "private": true,
   "description": "A tiny Home Assistant panel server for low-power browsers, tablets, and digital frames.",
   "type": "commonjs",
@@ -8,7 +8,7 @@
     "start": "node server.js",
     "check": "node --check server.js",
     "validate": "node scripts/validate-config.js && node scripts/validate-addon-repo.js",
-    "test": "node scripts/validate-config.js examples/frameo-climate.json && node scripts/validate-config.js examples/starter.json && node scripts/validate-addon-repo.js && node --check server.js && node scripts/check-proxy-auto-restart.js && node scripts/check-ingress-urls.js",
+    "test": "node scripts/validate-config.js examples/frameo-climate.json && node scripts/validate-config.js examples/starter.json && node scripts/validate-addon-repo.js && node --check server.js && node scripts/check-proxy-auto-restart.js && node scripts/check-ingress-urls.js && node scripts/check-balance-companion.js",
     "demo": "node scripts/demo-server.js",
     "demo:ha": "node scripts/demo-server.js --ha-only",
     "sync-addon": "node scripts/sync-addon.js"

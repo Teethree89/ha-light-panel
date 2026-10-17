@@ -262,7 +262,34 @@
       "activeStates": [
         "hvac_cooling",
         "hvac_heating"
-      ]
+      ],
+      "companion": {
+        "label": "Warm Floors",
+        "visibleWhen": {
+          "entity": "input_select.seasonal_mode",
+          "state": "Winter"
+        },
+        "statusEntity": "sensor.warm_floors_status",
+        "readyStates": [
+          "ready"
+        ],
+        "activeStates": [
+          "running"
+        ],
+        "action": {
+          "service": "script.warm_floors",
+          "data": {},
+          "confirm": {
+            "enabled": true,
+            "title": "Warm the floors?",
+            "confirmLabel": "Start warming"
+          },
+          "failure": {
+            "enabled": true,
+            "title": "Warm Floors unavailable"
+          }
+        }
+      }
     },
     "safetyPanel": {
       "rooms": [
