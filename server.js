@@ -945,6 +945,22 @@ function roomExtra(spec, context) {
   return '';
 }
 
+// An optional second reading that shares a room card's slot. While its
+// visibleWhen rule matches, the card splits in two: the room on top and the
+// companion below. Hidden (and absent from the payload) otherwise, so an
+// unknown or unavailable visibility entity fails closed to the full card.
+function roomCompanion(source, context) {
+  if (!isPlainObject(source) || !source.temp) return null;
+  if (!companionVisible({ visibleWhen: visibilityRule(source.visibleWhen) })) return null;
+  return {
+    label: String(source.label || 'Companion').slice(0, 24),
+    temp: specNumber(source.temp, 1),
+    humidity: specNumber(source.humidity, 1),
+    battery: source.battery ? specNumber(source.battery, 0) : null,
+    extra: roomExtra(source.extra, context)
+  };
+}
+
 function buildRoom(room, context) {
   const card = {
     id: room.id,
@@ -954,6 +970,9 @@ function buildRoom(room, context) {
     battery: room.battery ? specNumber(room.battery, 0) : null,
     extra: roomExtra(room.extra, context)
   };
+
+  const companion = roomCompanion(room.companion, context);
+  if (companion) card.companion = companion;
 
   if (room.miniStatus) {
     const mode = specText(room.miniStatus.mode, '');
@@ -1535,17 +1554,15 @@ function balanceCompanionConfig() {
   if (!isPlainObject(source)) return null;
   const action = isPlainObject(source.action) ? source.action : {};
   if (!action.service) return null;
-  const list = value => (Array.isArray(value) ? value : (value === undefined || value === null || value === '' ? [] : [value])).map(String);
   const label = String(source.label || 'Action').slice(0, 24);
-  const when = isPlainObject(source.visibleWhen) ? source.visibleWhen : {};
   return {
     label,
     color: layoutColor(source.color, '#d97706'),
     activeColor: layoutColor(source.activeColor, '#ea580c'),
-    visibleWhen: { entity: String(when.entity || ''), state: list(when.state), notState: list(when.notState) },
+    visibleWhen: visibilityRule(source.visibleWhen),
     statusEntity: String(source.statusEntity || ''),
-    readyStates: list(source.readyStates).length ? list(source.readyStates) : ['ready'],
-    activeStates: list(source.activeStates).length ? list(source.activeStates) : ['running', 'on', 'active'],
+    readyStates: stringList(source.readyStates).length ? stringList(source.readyStates) : ['ready'],
+    activeStates: stringList(source.activeStates).length ? stringList(source.activeStates) : ['running', 'on', 'active'],
     reasonAttribute: String(source.reasonAttribute || 'reason'),
     remainingAttribute: String(source.remainingAttribute || 'minutes_left'),
     action: {
@@ -1556,6 +1573,16 @@ function balanceCompanionConfig() {
       failure: modalSettings(action.failure, { enabled: true, title: `${label} unavailable`, body: '' })
     }
   };
+}
+
+function stringList(value) {
+  return (Array.isArray(value) ? value : (value === undefined || value === null || value === '' ? [] : [value])).map(String);
+}
+
+// The visibleWhen rule shared by the Balance companion and room companions.
+function visibilityRule(source) {
+  const when = isPlainObject(source) ? source : {};
+  return { entity: String(when.entity || ''), state: stringList(when.state), notState: stringList(when.notState) };
 }
 
 // Hidden unless the visibility entity is in a listed state, so an unknown or
@@ -3088,6 +3115,93 @@ ${layoutCardMarkup()}
       setFittedText(node.miniCompressor, miniStatus ? miniStatus.compressor || '--' : '', 54, 13, 11);
     }
 
+    // A room with a companion reading splits into two tiles while the server
+    // sends one: stacked in the landscape card, side by side in the flat
+    // portrait row. The tiles are drawn over a hidden card, sized from the
+    // card's current width and height so layout edits and portrait both work.
+    const SVG_NS = 'http://www.w3.org/2000/svg';
+    const ROOM_SPLIT_GAP = 8;
+    const ROOM_FULL_PARTS = ['fill', 'dot', 'name', 'temp', 'humGroup', 'batteryGroup', 'extra', 'miniFanGroup', 'miniCompressorGroup'];
+
+    function svgNode(parent, tag, attrs, className) {
+      const el = document.createElementNS(SVG_NS, tag);
+      for (const key of Object.keys(attrs || {})) el.setAttribute(key, attrs[key]);
+      if (className) el.setAttribute('class', className);
+      parent.appendChild(el);
+      return el;
+    }
+
+    function buildRoomTile(parent, withDot) {
+      const group = svgNode(parent, 'g', {});
+      const tile = {
+        group,
+        rect: svgNode(group, 'rect', { rx: 8, stroke: 'rgba(255,255,255,0.08)' }),
+        dot: withDot ? svgNode(group, 'circle', { r: 9 }) : null,
+        name: svgNode(group, 'text', { x: 18, y: 26, style: 'font-size:16px' }, 'label'),
+        temp: svgNode(group, 'text', { x: 18, fill: '#fff', 'font-size': 34, 'font-weight': 900 }),
+        metric: svgNode(group, 'g', {}),
+        extra: svgNode(group, 'text', { x: 18 }, 'tiny')
+      };
+      tile.drop = svgNode(tile.metric, 'path', { d: 'M10 2 C6 7 3 10.8 3 14.2 C3 18.3 6.1 21 10 21 C13.9 21 17 18.3 17 14.2 C17 10.8 14 7 10 2 Z' }, 'metric-icon');
+      tile.batteryBody = svgNode(tile.metric, 'rect', { x: 0, y: 4, width: 22, height: 13, rx: 3 }, 'metric-icon');
+      tile.batteryTip = svgNode(tile.metric, 'path', { d: 'M25 8 L25 13' }, 'metric-icon');
+      tile.value = svgNode(tile.metric, 'text', { y: 17 }, 'small');
+      return tile;
+    }
+
+    function paintRoomTile(tile, x, y, w, h, data, fill, dotFill) {
+      tile.group.setAttribute('transform', 'translate(' + x + ' ' + y + ')');
+      tile.rect.setAttribute('width', w);
+      tile.rect.setAttribute('height', h);
+      tile.rect.setAttribute('fill', fill);
+      if (tile.dot) {
+        tile.dot.setAttribute('cx', w - 28);
+        tile.dot.setAttribute('cy', 24);
+        tile.dot.setAttribute('fill', dotFill);
+      }
+      const tempY = h - 30;
+      setText(tile.name, data.label || '--');
+      tile.temp.setAttribute('y', tempY);
+      tile.temp.setAttribute('font-size', w < 220 ? 30 : 34);
+      setText(tile.temp, temp(data.temp, 1));
+      // One metric per tile: humidity if the reading has it, else battery.
+      const hasHumidity = Number.isFinite(data.humidity);
+      const hasBattery = !hasHumidity && Number.isFinite(data.battery);
+      setVisible(tile.metric, hasHumidity || hasBattery);
+      tile.metric.setAttribute('transform', 'translate(' + (w - 88) + ' ' + (tempY - 17) + ')');
+      setVisible(tile.drop, hasHumidity);
+      setVisible(tile.batteryBody, hasBattery);
+      setVisible(tile.batteryTip, hasBattery);
+      tile.value.setAttribute('x', hasBattery ? 36 : 26);
+      setText(tile.value, hasHumidity ? pct(data.humidity) : hasBattery ? data.battery + '%' : '');
+      tile.extra.setAttribute('y', h - 8);
+      setText(tile.extra, data.extra || '');
+    }
+
+    function applyRoomCompanion(node, room, color) {
+      const companion = room.companion || null;
+      if (!companion) {
+        if (!node.split) return;
+        setVisible(node.split.group, false);
+        for (const part of ['fill', 'dot', 'name', 'temp']) setVisible(node[part], true);
+        return;
+      }
+      if (!node.split) {
+        const group = svgNode(node.group, 'g', {});
+        node.split = { group, primary: buildRoomTile(group, true), second: buildRoomTile(group, false) };
+      }
+      const width = Number(node.fill.getAttribute('width')) || 226;
+      const height = Number(node.fill.getAttribute('height')) || 208;
+      const stacked = height >= 150;
+      const tileW = stacked ? width : Math.floor((width - ROOM_SPLIT_GAP) / 2);
+      const tileH = stacked ? Math.floor((height - ROOM_SPLIT_GAP) / 2) : height;
+      const base = node.fill.dataset.panelBackground || color.room;
+      paintRoomTile(node.split.primary, 0, 0, tileW, tileH, room, base, color.fill);
+      paintRoomTile(node.split.second, stacked ? 0 : tileW + ROOM_SPLIT_GAP, stacked ? tileH + ROOM_SPLIT_GAP : 0, tileW, tileH, companion, '#102131', null);
+      for (const part of ROOM_FULL_PARTS) setVisible(node[part], false);
+      setVisible(node.split.group, true);
+    }
+
     function compactTime(iso) {
       const date = new Date(iso);
       if (Number.isNaN(date.getTime())) return '--';
@@ -3248,6 +3362,7 @@ ${layoutCardMarkup()}
         setText(node.temp, temp(room.temp, 1));
         setRoomMetrics(node, room);
         setRoomExtra(node, room);
+        applyRoomCompanion(node, room, color);
       }
 
       const sock = data.sock || {};

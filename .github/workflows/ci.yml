@@ -27,3 +27,5 @@ jobs:
         run: node scripts/check-ingress-urls.js
       - name: Check companion visibility and service guards
         run: node scripts/check-balance-companion.js
+      - name: Check room companion visibility
+        run: node scripts/check-room-companion.js

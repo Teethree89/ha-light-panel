@@ -315,7 +315,7 @@ The most important sections are:
 
 - `homeAssistant`: HA URL and optional browser URL
 - `panel.metrics`: top-card entity IDs
-- `panel.rooms`: six room cards
+- `panel.rooms`: six room cards, each optionally splitting in two with a seasonal companion reading (see [Room Companion](docs/configuration.md#room-companion))
 - `panel.mode`: which sensors decide the headline status
 - `panel.comfort`: comfort-band targets and schedule state
 - `panel.actions`: service calls for buttons

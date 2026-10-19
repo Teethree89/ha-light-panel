@@ -196,6 +196,37 @@ Comfort-band status:
 }
 ```
 
+## Room Companion
+
+A room can share its card with a second reading that appears only when a rule
+matches, such as a pipe sensor shown through the winter. While `visibleWhen`
+matches, the card splits in two: the room on top and the companion below
+(side by side in the portrait layout). Otherwise the room keeps its full card.
+
+```json
+{
+  "id": "whole",
+  "label": "Whole Home",
+  "temp": "sensor.average_temperature",
+  "humidity": "sensor.average_humidity",
+  "extra": { "type": "comfortStatus" },
+  "companion": {
+    "label": "Pipe Sensor",
+    "temp": "sensor.pipe_temperature",
+    "battery": "sensor.pipe_temperature_battery",
+    "extra": "Pipe area",
+    "visibleWhen": { "entity": "input_select.seasonal_mode", "state": "Winter" }
+  }
+}
+```
+
+`temp` is required; `label`, `humidity`, `battery` and `extra` take the same
+forms as on a room. A tile shows one small metric, humidity if the reading has
+it and otherwise battery. `visibleWhen.state` and `notState` accept a string or
+an array. A missing or unavailable visibility entity hides the companion, and
+with no rule it is always shown. A companion sensor that goes unavailable shows
+`--`, never its last value.
+
 ## Mini Split Status
 
 Use `miniStatus` to render fan and compressor/action icons instead of raw text.

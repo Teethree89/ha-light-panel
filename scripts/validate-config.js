@@ -66,6 +66,13 @@ if (config.panel.rooms.length > 6) {
 for (const [index, room] of config.panel.rooms.entries()) {
   if (!room.label) fail(`panel.rooms[${index}].label is required.`);
   if (!room.temp) fail(`panel.rooms[${index}].temp is required.`);
+  if (room.companion !== undefined) {
+    if (!room.companion || typeof room.companion !== 'object' || Array.isArray(room.companion)) {
+      fail(`panel.rooms[${index}].companion must be an object.`);
+    } else if (!room.companion.temp) {
+      fail(`panel.rooms[${index}].companion.temp is required.`);
+    }
+  }
 }
 
 if (config.cameras && !Array.isArray(config.cameras)) {
